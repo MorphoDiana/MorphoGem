@@ -1,0 +1,121 @@
+{
+  "name": "morphogem-desktop",
+  "version": "2.1.0",
+  "private": true,
+  "author": "MorphoDiana & Gemini",
+  "description": "MorphoGem — 节点式 2D 转 3D 角色工坊 (Visual Node-Graph Studio + Mod Ecosystem + Built-in Tripo Daemon)",
+  "homepage": "https://github.com/MorphoDiana/MorphoGem",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MorphoDiana/MorphoGem.git"
+  },
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke-test",
+    "pack:dir": "electron-builder --win dir",
+    "dist:installer": "electron-builder --win nsis --publish never",
+    "release:github": "electron-builder --win nsis --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^35.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "ai.morphogem.desktop",
+    "productName": "MorphoGem",
+    "artifactName": "${productName}-Setup-${version}.${ext}",
+    "asar": true,
+    "afterPack": "./after-pack.cjs",
+    "directories": {
+      "output": "dist"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "MorphoDiana",
+        "repo": "MorphoGem",
+        "releaseType": "release"
+      }
+    ],
+    "files": [
+      "main.mjs",
+      "preload-toolbar.cjs",
+      "preload-tripo.cjs",
+      "toolbar.html",
+      "build/icon.ico",
+      "build/icon.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "..",
+        "to": "app-core",
+        "filter": [
+          "public/**/*",
+          "scripts/**/*",
+          "skills/**/*",
+          "builtin-mods/**/*",
+          "docs/**/*",
+          "tripo_mcp/**/*",
+          "server*.mjs",
+          "package.json",
+          "AGENTS.md",
+          "CLAUDE.md",
+          "README.md",
+          "LICENSE",
+          "THIRD_PARTY_NOTICES.md",
+          "!**/.git/**",
+          "!**/desktop/**",
+          "!**/projects/**",
+          "!**/Projects/**",
+          "!**/Mods/**",
+          "!**/Exports/**",
+          "!**/local/**",
+          "!**/__pycache__/**",
+          "!**/.daemon-state.json"
+        ]
+      }
+    ],
+    "fileAssociations": [
+      {
+        "ext": "mgem",
+        "name": "MorphoGem Project",
+        "description": "MorphoGem 角色工程文件 (.mgem)",
+        "icon": "build/icon.ico"
+      },
+      {
+        "ext": "mgmod",
+        "name": "MorphoGem Mod Package",
+        "description": "MorphoGem 节点与模板 Mod 扩展包 (.mgmod)",
+        "icon": "build/icon.ico"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MorphoGem",
+      "uninstallDisplayName": "MorphoGem — 节点式 3D 角色工坊",
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh"
+    }
+  }
+}

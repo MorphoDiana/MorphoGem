@@ -1,0 +1,18 @@
+{
+  "name": "morphogem",
+  "version": "2.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node tripo_mcp/test-smoke.mjs",
+    "desktop": "npm --prefix desktop start",
+    "desktop:smoke": "npm --prefix desktop run smoke",
+    "desktop:pack": "npm --prefix desktop run pack:dir",
+    "desktop:installer": "npm --prefix desktop run dist:installer"
+  }
+}

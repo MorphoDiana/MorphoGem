@@ -1,0 +1,113 @@
+name: Build & Publish MorphoGem Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            tripo_mcp/package-lock.json
+            desktop/package-lock.json
+
+      - name: Install Tripo MCP dependencies
+        working-directory: tripo_mcp
+        run: npm ci
+
+      - name: Install Desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Run core MCP & clean-room verification tests
+        run: node tripo_mcp/test-smoke.mjs
+
+      - name: Build Windows NSIS Setup Installer Locally
+        working-directory: desktop
+        run: npx electron-builder --win nsis --publish never
+
+      - name: Publish & Verify GitHub Release Assets (.exe + .blockmap + latest.yml)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ github.ref_name }}"
+
+          $exeFile = Get-ChildItem "desktop/dist/MorphoGem-Setup-*.exe" |
+            Where-Object { $_.Name -notlike "*__uninstaller*" } |
+            Select-Object -First 1
+          $blockmapFile = Get-ChildItem "desktop/dist/MorphoGem-Setup-*.exe.blockmap" | Select-Object -First 1
+          $latestYml = Get-Item "desktop/dist/latest.yml"
+
+          if (-not $exeFile -or $exeFile.Length -lt 50MB) {
+            throw "Installer .exe was not generated or is unexpectedly small!"
+          }
+          Write-Host "Built installer: $($exeFile.Name) ($([math]::Round($exeFile.Length / 1MB, 2)) MB)"
+
+          $notes = @(
+            "## MorphoGem $tag (MIT Open-Source Release)",
+            "",
+            "- **Windows 安装程序 / Windows Setup**: 下载下方 **`$($exeFile.Name)`** 双击即可安装（支持自定义安装路径，升级或卸载时自动保留 `Projects`、`Exports`、`Mods` 与 `userdata` 数据目录）。",
+            "- **自动增量更新索引**: `latest.yml` 与 `.blockmap` 供已安装客户端内置更新器使用，普通用户无需下载。"
+          ) -join "`n"
+
+          gh release view $tag --repo "${{ github.repository }}" >$null 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag `
+              --repo "${{ github.repository }}" `
+              --title "MorphoGem $tag" `
+              --notes $notes `
+              --latest
+          } else {
+            gh release edit $tag `
+              --repo "${{ github.repository }}" `
+              --title "MorphoGem $tag" `
+              --notes $notes `
+              --draft=false `
+              --latest
+          }
+
+          for ($attempt = 1; $attempt -le 4; $attempt++) {
+            Write-Host "Uploading release assets (attempt $attempt/4)..."
+            gh release upload $tag `
+              $exeFile.FullName `
+              $blockmapFile.FullName `
+              $latestYml.FullName `
+              --repo "${{ github.repository }}" `
+              --clobber
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 4) { throw "Failed to upload release assets after 4 attempts." }
+            Start-Sleep -Seconds 8
+          }
+
+          $relInfo = gh release view $tag --repo "${{ github.repository }}" --json assets | ConvertFrom-Json
+          $uploadedNames = @($relInfo.assets | ForEach-Object { $_.name })
+          Write-Host "Verified Release Assets on GitHub: $($uploadedNames -join ', ')"
+          if (-not ($uploadedNames -contains $exeFile.Name) -or -not ($uploadedNames -contains 'latest.yml') -or -not ($uploadedNames -contains $blockmapFile.Name)) {
+            throw "Release asset verification failed! Present: $($uploadedNames -join ', ')"
+          }
+
+      - name: Upload Build Artifacts Backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: MorphoGem-Windows-Setup
+          path: |
+            desktop/dist/MorphoGem-Setup-*.exe
+            desktop/dist/*.blockmap
+            desktop/dist/latest.yml

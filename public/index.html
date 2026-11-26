@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MorphoGem — 节点式 3D 角色工坊</title>
+  <link rel="icon" type="image/png" href="./brand/favicon.png">
+  <link rel="stylesheet" href="./studio.css">
+  <link rel="stylesheet" href="./node-canvas.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body class="node-graph-active">
+  <!-- Unified 54px Studio Header -->
+  <header class="studio-header">
+    <div class="identity">
+      <img src="./brand/morphogem-icon.png" alt="MorphoGem" class="brand-logo">
+      <span class="brand-name" id="studioBrandName">MorphoGem</span>
+      <span class="header-divider"></span>
+      <input
+        type="text"
+        id="projectNameInput"
+        class="project-name-input"
+        maxlength="80"
+        value="新角色"
+        title="点击直接修改当前角色/项目名称"
+        autocomplete="off"
+      >
+      <span class="save-status-pill" id="saveStatusPill">已就绪</span>
+    </div>
+
+    <!-- Center Workspace Switcher Slot (populated by node-canvas.mjs) -->
+    <div class="header-center-slot" id="headerCenterSlot"></div>
+
+    <div class="header-actions">
+      <button type="button" id="newProjectBtn" class="hdr-btn" data-i18n="hdrNew">+ 新建</button>
+      <button type="button" id="recentProjectsBtn" class="hdr-btn" data-i18n="hdrRecent">📂 历史项目</button>
+      <label class="hdr-btn file-trigger" title="打开本地 .mgem 项目包">
+        <span data-i18n="hdrOpen">打开 .mgem</span>
+        <input type="file" id="openProjectInput" accept=".mgem,.zip" hidden>
+      </label>
+      <button type="button" id="downloadMgemBtn" class="hdr-btn" data-i18n="hdrExportMgem">💾 导出包</button>
+      <button type="button" id="localeSwitchBtn" class="hdr-btn lang-btn" title="切换界面与 AI 指令语言 (中文 / English)">🌐 中文</button>
+      <button type="button" id="openSettingsBtn" class="hdr-btn settings-btn" data-i18n="hdrSettings">⚙ 设置</button>
+    </div>
+  </header>
+
+  <!-- Main Dual-Mode Studio Content -->
+  <main class="app-content">
+    <!-- #nodeGraphWorkspace is prepended here by initNodeCanvas() -->
+
+    <!-- 3D Multi-Part Assembly & Proportion Viewport -->
+    <section id="viewport3DWorkspace" class="vp-workspace" aria-label="3D Assembly Viewport">
+      <div class="vp-stage-wrap" id="vpCanvasWrap">
+        <div class="vp-camera-bar">
+          <div class="vp-cam-group">
+            <button type="button" class="vp-cam-btn active" data-cam="orbit" data-i18n="camOrbit">自由透视</button>
+            <button type="button" class="vp-cam-btn" data-cam="front" data-i18n="camFront">正视</button>
+            <button type="button" class="vp-cam-btn" data-cam="right" data-i18n="camRight">右视</button>
+            <button type="button" class="vp-cam-btn" data-cam="left" data-i18n="camLeft">左视</button>
+            <button type="button" class="vp-cam-btn" data-cam="back" data-i18n="camBack">背视</button>
+            <button type="button" class="vp-cam-btn" data-cam="top" data-i18n="camTop">顶视</button>
+          </div>
+          <div class="vp-cam-group">
+            <button type="button" id="vpFitBtn" class="vp-cam-btn" data-i18n="vpFit">居中适应</button>
+            <button type="button" id="vpGuideToggleBtn" class="vp-cam-btn active" data-i18n="vpGuide">比例垫图</button>
+            <button type="button" id="vpWireframeBtn" class="vp-cam-btn" data-i18n="vpWireframe">网格线框</button>
+          </div>
+        </div>
+
+        <div class="vp-height-badge" id="vpTotalHeightBadge">当前总高: -- m</div>
+
+        <div class="vp-empty-overlay" id="vpEmptyOverlay">
+          <div class="vp-empty-card">
+            <h3 data-i18n="vpEmptyTitle">尚未接入已生成的 3D 部件网格</h3>
+            <p data-i18n="vpEmptyDesc">
+              请先在「节点蓝图画布」完成四视图拆解并运行 Tripo 3D 建模节点，且确保建模节点连入了「3D 合体对位与最终导出」终点节点。
+            </p>
+            <button type="button" id="vpBackToCanvasBtn" class="ng-btn primary" data-i18n="vpBackCanvas">
+              ← 返回节点蓝图画布
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Inspector Sidebar -->
+      <aside class="vp-inspector">
+        <div class="vp-card">
+          <div class="vp-card-head">
+            <strong data-i18n="vpPartsTitle">🧩 已接入的 3D 部件</strong>
+            <span class="vp-badge" id="vpPartCountBadge">0</span>
+          </div>
+          <div class="vp-parts-list" id="vpPartsList"></div>
+        </div>
+
+        <div class="vp-card" id="vpTransformCard">
+          <div class="vp-card-head">
+            <strong id="vpSelectedPartTitle" data-i18n="vpTransformTitle">✥ 选中部件空间微调</strong>
+            <button type="button" id="vpResetPartBtn" class="ng-btn" data-i18n="vpResetPart">重置</button>
+          </div>
+          <div class="vp-transform-grid" id="vpTransformControls">
+            <label class="vp-slider-row">
+              <span data-i18n="tfScale">等比缩放</span>
+              <input type="range" id="tfScaleRange" min="0.05" max="4.00" step="0.01" value="1">
+              <input type="number" id="tfScaleNum" min="0.02" max="10" step="0.01" value="1">
+            </label>
+            <label class="vp-slider-row">
+              <span data-i18n="tfPosX">左右 X (m)</span>
+              <input type="range" id="tfPosXRange" min="-2.00" max="2.00" step="0.005" value="0">
+              <input type="number" id="tfPosXNum" min="-10" max="10" step="0.005" value="0">
+            </label>
+            <label class="vp-slider-row">
+              <span data-i18n="tfPosZ">高低 Z (m)</span>
+              <input type="range" id="tfPosZRange" min="-0.50" max="3.00" step="0.005" value="0.85">
+              <input type="number" id="tfPosZNum" min="-10" max="10" step="0.005" value="0.85">
+            </label>
+            <label class="vp-slider-row">
+              <span data-i18n="tfPosY">前后 Y (m)</span>
+              <input type="range" id="tfPosYRange" min="-2.00" max="2.00" step="0.005" value="0">
+              <input type="number" id="tfPosYNum" min="-10" max="10" step="0.005" value="0">
+            </label>
+            <label class="vp-slider-row">
+              <span data-i18n="tfRotX">俯仰 Rx (°)</span>
+              <input type="range" id="tfRotXRange" min="-180" max="180" step="1" value="0">
+              <input type="number" id="tfRotXNum" min="-360" max="360" step="1" value="0">
+            </label>
+            <label class="vp-slider-row">
+              <span data-i18n="tfRotY">侧倾 Ry (°)</span>
+              <input type="range" id="tfRotYRange" min="-180" max="180" step="1" value="0">
+              <input type="number" id="tfRotYNum" min="-360" max="360" step="1" value="0">
+            </label>
+            <label class="vp-slider-row">
+              <span data-i18n="tfRotZ">水平旋转 Rz (°)</span>
+              <input type="range" id="tfRotZRange" min="-180" max="180" step="1" value="0">
+              <input type="number" id="tfRotZNum" min="-360" max="360" step="1" value="0">
+            </label>
+          </div>
+        </div>
+
+        <div class="vp-card vp-export-card">
+          <div class="vp-card-head">
+            <strong data-i18n="vpExportTitle">📦 整体身高与合并导出</strong>
+          </div>
+          <div class="vp-height-fit-row">
+            <label class="ng-field" style="flex:1">
+              <span data-i18n="vpTargetHeightLabel">目标总身高 (m)</span>
+              <input type="number" id="vpTargetHeightInput" class="ng-input" min="0.10" max="10.0" step="0.01" value="1.60">
+            </label>
+            <button type="button" id="vpApplyHeightBtn" class="ng-btn" style="align-self:flex-end" data-i18n="vpApplyHeightBtn">
+              校准总高与贴地
+            </button>
+          </div>
+          <label class="ng-field" style="margin-top:10px">
+            <span data-i18n="vpMaterialModeLabel">Blender 导出着色器模式</span>
+            <select id="vpMaterialModeSelect" class="ng-select" style="width:100%">
+              <option value="pbr" data-i18n="matPbr">PBR 标准材质（通用推荐）</option>
+              <option value="mtoon" data-i18n="matToon">Anime Toon 二次元赛璐璐材质</option>
+            </select>
+          </label>
+          <button type="button" id="vpExportMergedBtn" class="ng-btn emerald vp-export-cta" data-i18n="vpExportBtn">
+            📦 合并导出最终模型 (FBX + GLB + Blend)
+          </button>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <!-- Settings Dialog (#previewSettingsDialog mounted & augmented by mod-manager-ui.mjs) -->
+  <dialog id="previewSettingsDialog" class="ng-modal studio-dialog">
+    <div class="dialog-top">
+      <h2 data-i18n="settingsTitle">⚙ 工作台与引擎设置</h2>
+      <button type="button" id="closeSettingsBtn">×</button>
+    </div>
+
+    <!-- mod-manager-ui.mjs inserts .settings-engine-box (Blender path & GitHub Update) right before .settings-project -->
+    <div class="settings-project">
+      <div class="settings-sec-head">
+        <h3 data-i18n="settingsLangTitle">🌐 界面与 AI 提示词语言 / Language</h3>
+      </div>
+      <div class="lang-radio-row">
+        <button type="button" class="ng-btn lang-choice" data-set-lang="zh-CN">简体中文 (zh-CN)</button>
+        <button type="button" class="ng-btn lang-choice" data-set-lang="en">English (en)</button>
+      </div>
+
+      <div class="settings-sec-head" style="margin-top:14px">
+        <h3 data-i18n="settingsDirTitle">📁 当前活跃工程存储信息</h3>
+      </div>
+      <p id="settingsProjectPathText" class="small-note" style="word-break:break-all;margin:6px 0 0;color:#94a3b8"></p>
+    </div>
+
+    <div class="dialog-actions" style="margin-top:16px;justify-content:flex-end">
+      <button type="button" id="closeSettingsFooterBtn" class="ng-btn primary" data-i18n="btnDone">完成</button>
+    </div>
+  </dialog>
+
+  <!-- Recent Projects Modal -->
+  <dialog id="recentProjectsDialog" class="ng-modal studio-dialog">
+    <div class="dialog-top">
+      <h2 data-i18n="recentTitle">📂 本地历史项目 (Projects)</h2>
+      <button type="button" id="closeRecentBtn">×</button>
+    </div>
+    <p id="recentDirHint" class="small-note" style="margin:6px 0 10px;color:#94a3b8"></p>
+    <div class="recent-projects-list" id="recentProjectsList"></div>
+    <div class="dialog-actions" style="margin-top:14px;justify-content:flex-end">
+      <button type="button" id="closeRecentFooterBtn" class="ng-btn primary" data-i18n="btnClose">关闭</button>
+    </div>
+  </dialog>
+
+  <!-- AI View-Decomposition Prompt Copy Modal -->
+  <dialog id="aiPromptDialog" class="ng-modal studio-dialog wide-dialog">
+    <div class="dialog-top">
+      <h2 data-i18n="promptModalTitle">✨ AI 正交多视图拆解指令已生成</h2>
+      <button type="button" id="closePromptDialogBtn">×</button>
+    </div>
+    <p class="small-note" style="margin:6px 0 10px;color:#cbd5e1;line-height:1.55" data-i18n="promptModalHint">
+      关联节点已自动进入局部锁定保护（画布中其他无关分支仍可自由编辑）。请复制下方指令发送给你的 AI 助手（Claude Code / Antigravity / Cursor 等），AI 完成后结果会自动热刷新回画布节点并自动解锁！
+    </p>
+    <textarea id="aiPromptTextarea" class="prompt-textarea" readonly spellcheck="false"></textarea>
+    <div class="dialog-actions" style="margin-top:12px;justify-content:space-between;flex-wrap:wrap">
+      <button type="button" id="cancelAiLockBtn" class="ng-btn danger" data-i18n="btnCancelLock">🔓 取消本次任务并解锁节点</button>
+      <div style="display:flex;gap:8px">
+        <button type="button" id="copyAiPromptBtn" class="ng-btn primary" data-i18n="btnCopyPrompt">📋 一键复制完整指令</button>
+        <button type="button" id="doneAiPromptBtn" class="ng-btn" data-i18n="btnClose">关闭窗口</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Non-blocking Toast Container -->
+  <div id="studioToast" class="studio-toast" hidden></div>
+
+  <script type="module" src="./studio-app.mjs"></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+# Node & Python caches
+node_modules/
+**/node_modules/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Built Desktop Binaries & Release Packages (NEVER commit .exe to Git — publish via GitHub Releases)
+*.exe
+*.msi
+*.dmg
+*.AppImage
+*.blockmap
+dist/
+desktop/dist/
+desktop/out/
+
+# User Runtime & Local Workspace Directories
+local/
+userdata/
+projects/
+Projects/
+Exports/
+Mods/
+tripo_mcp/.daemon-state.json
+tripo_mcp/downloads/
+.DS_Store
+Thumbs.db

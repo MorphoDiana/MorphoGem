@@ -1,0 +1,76 @@
+{
+  "format": "morphogem-mod-v1",
+  "id": "chibi-blindbox-kit",
+  "name": "Q版盲盒手办拆件包",
+  "version": "1.0.0",
+  "author": "MorphoGem Official",
+  "description": "专为 2~3 头身 Q 版潮玩盲盒与粘土人风格定制：含整图拆件模板、防断呆毛大头节点、插栓身体节点及 PVC 手办圆润化 AI 拆图规则。",
+  "tags": ["Q版", "盲盒手办", "防碎面"],
+  "promptRulesFile": "prompt-rules.md",
+  "templates": [
+    {
+      "id": "q-blindbox-full",
+      "name": "Q版盲盒三件套（大头 + 插栓身体 + 手持小道具）",
+      "description": "2.5头身潮玩手办标准分件拓扑，自动配置 2K 四视图与 H3.5 高精网格",
+      "nodes": [
+        { "relId": "n_src", "type": "source_image", "x": 40, "y": 90, "params": { "title": "主立绘（目标原画）", "note": "" } },
+        { "relId": "n_style", "type": "style_ref", "x": 40, "y": 400, "params": { "title": "画风参考立绘", "note": "参考哑光 PVC 潮玩手办柔和渐变质感" } },
+        { "relId": "n_head_v", "type": "part_views", "x": 380, "y": 40, "params": { "partName": "Q版头部（含加厚头发）", "promptHint": "2.5头身圆润脸颊，发梢呆毛加厚防断，底部去脖子留平整内凹插口", "pose": "natural", "resolution": 2048, "modBadge": "Q版Mod" } },
+        { "relId": "n_head_m", "type": "tripo_mesh", "x": 740, "y": 40, "params": { "title": "Tripo · Q版头部", "quality": "high", "aiModel": "H3.5", "polyFaces": 2000000, "textureSize": 4096, "pbr": true, "removeLighting": true, "candidateCount": 1 } },
+        { "relId": "n_body_v", "type": "part_views", "x": 380, "y": 380, "params": { "partName": "Q版身体（带颈部插栓）", "promptHint": "去除头部与手持物，短萌四肢 T-Pose 平举留足腋下间隙，顶部保留粗壮圆柱脖子插栓", "pose": "t", "resolution": 2048, "modBadge": "Q版Mod" } },
+        { "relId": "n_body_m", "type": "tripo_mesh", "x": 740, "y": 380, "params": { "title": "Tripo · Q版身体", "quality": "high", "aiModel": "H3.5", "polyFaces": 2000000, "textureSize": 4096, "pbr": true, "removeLighting": true, "candidateCount": 1 } },
+        { "relId": "n_prop_v", "type": "part_views", "x": 380, "y": 720, "params": { "partName": "Q版手持配件", "promptHint": "移除手指遮挡，90°垂直端正摆放，边缘做圆润倒角加厚处理", "pose": "natural", "resolution": 1024, "modBadge": "Q版Mod" } },
+        { "relId": "n_prop_m", "type": "tripo_mesh", "x": 740, "y": 720, "params": { "title": "Tripo · Q版配件", "quality": "high", "aiModel": "H3.5", "polyFaces": 1000000, "textureSize": 4096, "pbr": true, "removeLighting": true, "candidateCount": 1 } },
+        { "relId": "n_asm", "type": "assembly_export", "x": 1120, "y": 340, "params": { "title": "3D 合体对位与最终导出", "materialMode": "pbr" } }
+      ],
+      "edges": [
+        { "from": "n_src", "fromPort": "image", "to": "n_head_v", "toPort": "source" },
+        { "from": "n_style", "fromPort": "style", "to": "n_head_v", "toPort": "style" },
+        { "from": "n_head_v", "fromPort": "views", "to": "n_head_m", "toPort": "views" },
+        { "from": "n_head_m", "fromPort": "mesh", "to": "n_asm", "toPort": "meshes" },
+        { "from": "n_src", "fromPort": "image", "to": "n_body_v", "toPort": "source" },
+        { "from": "n_style", "fromPort": "style", "to": "n_body_v", "toPort": "style" },
+        { "from": "n_body_v", "fromPort": "views", "to": "n_body_m", "toPort": "views" },
+        { "from": "n_body_m", "fromPort": "mesh", "to": "n_asm", "toPort": "meshes" },
+        { "from": "n_src", "fromPort": "image", "to": "n_prop_v", "toPort": "source" },
+        { "from": "n_prop_v", "fromPort": "views", "to": "n_prop_m", "toPort": "views" },
+        { "from": "n_prop_m", "fromPort": "mesh", "to": "n_asm", "toPort": "meshes" }
+      ]
+    }
+  ],
+  "customNodes": [
+    {
+      "id": "chibi-head",
+      "baseType": "part_views",
+      "badge": "Q版Mod",
+      "title": "🎀 Q版盲盒大头拆件（防断发加固）",
+      "description": "自带 2.5 头身萌系脸颊比例锁死与呆毛加厚规则",
+      "params": {
+        "partName": "Q版头部（含加厚头发）",
+        "promptHint": "保持Q版圆润包脸轮廓，呆毛与发尾聚拢加厚，彻底去除脖子与衣领",
+        "pose": "natural",
+        "resolution": 2048
+      },
+      "craftRules": [
+        "Q版潮玩头部铁律：五官集中于面中偏下位置，双耳圆润外露；所有呆毛、双马尾与飘带厚度不得低于 8px，严禁细如发丝的碎刺以防 3D 网格断裂。"
+      ]
+    },
+    {
+      "id": "chibi-body",
+      "baseType": "part_views",
+      "badge": "Q版Mod",
+      "title": "🧸 Q版圆润身体（含圆柱插栓脖颈）",
+      "description": "短萌四肢 T-Pose + 粗壮颈部插接柱 + 平底可站立鞋底",
+      "params": {
+        "partName": "Q版身体（带颈部插栓）",
+        "promptHint": "去头去道具，短萌双臂水平90°展开，顶部留粗圆柱脖子插栓，鞋底水平对齐",
+        "pose": "t",
+        "resolution": 2048
+      },
+      "craftRules": [
+        "Q版潮玩躯干铁律：头身比对应的躯干紧凑圆润，腋下与双腿内侧必须留出清晰透明空隙避免短肢粘连；鞋底保持同一水平面以便桌面平稳站立。"
+      ]
+    }
+  ],
+  "branches": []
+}

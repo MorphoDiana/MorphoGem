@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>MorphoGem Toolbar</title>
+  <style>
+    * { box-sizing: border-box; user-select: none; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 44px;
+      overflow: hidden;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+      font-size: 12.5px;
+    }
+    .bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 44px;
+      padding: 0 12px;
+      border-bottom: 1px solid #1e293b;
+      gap: 10px;
+    }
+    .left, .center, .right {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+    .app-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding-right: 7px;
+      border-right: 1px solid #1e293b;
+    }
+    .app-badge img {
+      width: 25px;
+      height: 25px;
+      border-radius: 6px;
+      display: block;
+    }
+    .app-badge strong {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      background: linear-gradient(120deg, #38bdf8, #c084fc);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .ver-chip {
+      font-size: 10px;
+      color: #94a3b8;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(148, 163, 184, 0.12);
+    }
+    .tabs {
+      display: inline-flex;
+      background: #1e293b;
+      padding: 3px;
+      border-radius: 8px;
+      gap: 3px;
+    }
+    .tab {
+      border: none;
+      background: transparent;
+      color: #94a3b8;
+      padding: 4px 11px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.14s ease;
+      white-space: nowrap;
+    }
+    .tab:hover { color: #f8fafc; background: rgba(255,255,255,0.05); }
+    .tab.active {
+      background: #2563eb;
+      color: #ffffff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+    }
+    .tab.alert:not(.active) {
+      background: rgba(245, 158, 11, 0.22);
+      color: #fde68a;
+      border: 1px solid rgba(245, 158, 11, 0.55);
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #64748b;
+      display: inline-block;
+    }
+    .dot.ok { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.65); }
+    .dot.warn { background: #f59e0b; box-shadow: 0 0 6px rgba(245,158,11,0.75); }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #cbd5e1;
+      font-size: 11.5px;
+      white-space: nowrap;
+      max-width: 340px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    button.pill {
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.14s ease;
+    }
+    button.pill:hover {
+      border-color: #64748b;
+      color: #ffffff;
+    }
+    .pill.blender-ok {
+      border-color: rgba(34, 197, 94, 0.42);
+      color: #bbf7d0;
+    }
+    .pill.blender-warn {
+      background: rgba(245, 158, 11, 0.18);
+      border-color: rgba(245, 158, 11, 0.55);
+      color: #fde68a;
+      font-weight: 600;
+    }
+    .pill.activity {
+      background: rgba(37, 99, 235, 0.2);
+      border-color: #3b82f6;
+      color: #bfdbfe;
+      font-weight: 600;
+    }
+    .pill.blocked {
+      background: rgba(245, 158, 11, 0.2);
+      border-color: #f59e0b;
+      color: #fef08a;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .pill.download {
+      background: rgba(16, 185, 129, 0.18);
+      border-color: #10b981;
+      color: #a7f3d0;
+      font-weight: 600;
+    }
+    .pill.saved {
+      background: rgba(34, 197, 94, 0.2);
+      border-color: #22c55e;
+      color: #bbf7d0;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-group {
+      display: inline-flex;
+      align-items: center;
+    }
+    .btn {
+      border: 1px solid #334155;
+      background: #1e293b;
+      color: #cbd5e1;
+      padding: 4px 8.5px;
+      border-radius: 6px;
+      font-size: 11.5px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.14s ease;
+    }
+    .btn:hover { background: #334155; color: #ffffff; }
+    .btn.update-ready {
+      background: rgba(16, 185, 129, 0.24);
+      border-color: #10b981;
+      color: #a7f3d0;
+      font-weight: 700;
+    }
+    .btn.update-avail {
+      background: rgba(56, 189, 248, 0.2);
+      border-color: #38bdf8;
+      color: #bae6fd;
+      font-weight: 700;
+    }
+    .btn-group .btn:first-child {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+    .btn-group .btn:last-child {
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+      border-left: none;
+      padding: 4px 6px;
+      color: #94a3b8;
+    }
+    .btn.copied { border-color: #22c55e; color: #86efac; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <div class="left">
+      <div class="app-badge" title="MorphoGem · MorphoDiana × Gemini">
+        <img src="./build/icon.png" alt="MorphoGem">
+        <strong>MorphoGem</strong>
+        <span id="verChip" class="ver-chip">v2.1.0</span>
+      </div>
+      <div class="tabs">
+        <button id="tabWorkbench" class="tab active" type="button">
+          <span>节点角色工坊</span>
+        </button>
+        <button id="tabTripo" class="tab" type="button">
+          <span id="tripoDot" class="dot"></span>
+          <span id="tripoTabLabel">Tripo 账号工作区</span>
+        </button>
+      </div>
+      <button id="blenderPill" class="pill blender-warn" type="button" title="点击选择或更换本机 blender.exe 路径">⚠ 点击指定 Blender 路径</button>
+    </div>
+
+    <div class="center">
+      <span id="blockedPill" class="pill blocked" hidden></span>
+      <span id="activityPill" class="pill activity" hidden></span>
+      <span id="downloadPill" class="pill download" hidden></span>
+      <span id="savedPill" class="pill saved" hidden title="点击在资源管理器中定位文件"></span>
+    </div>
+
+    <div class="right">
+      <button id="btnProjects" class="btn" type="button" title="打开安装目录下的 Projects 工程文件夹">项目目录</button>
+      <button id="btnMods" class="btn" type="button" title="打开安装目录下的 Mods 扩展包文件夹">🧩 Mods目录</button>
+      <div class="btn-group">
+        <button id="btnDownloads" class="btn" type="button" title="打开安装目录下的 Exports 导出文件夹">导出目录</button>
+        <button id="btnChooseDownloads" class="btn" type="button" title="更改默认导出目录">⚙</button>
+      </div>
+      <button id="btnCopyMcp" class="btn" type="button" title="复制供 AI Agent 直接连接 MorphoGem 的 MCP 配置">复制 Agent 配置</button>
+      <button id="btnUpdate" class="btn" type="button" title="从 GitHub Releases 检查客户端更新">🔄 检查更新</button>
+      <button id="btnReload" class="btn" type="button" title="刷新当前标签视图">刷新</button>
+    </div>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let lastState = null;
+
+    function fmtMb(bytes) {
+      return (bytes / 1048576).toFixed(1) + ' MB';
+    }
+
+    function render(s) {
+      if (!s) return;
+      lastState = s;
+      if (s.appVersion) $('verChip').textContent = 'v' + s.appVersion;
+
+      $('tabWorkbench').classList.toggle('active', s.activeTab === 'workbench');
+      $('tabTripo').classList.toggle('active', s.activeTab === 'tripo');
+      $('tabTripo').classList.toggle('alert', Boolean(s.tripoBlocked));
+
+      const dot = $('tripoDot');
+      dot.className = 'dot ' + (s.tripoBlocked ? 'warn' : s.tripoReady ? 'ok' : '');
+      let tabText = 'Tripo 账号工作区';
+      if (s.tripoBlocked === 'AUTH_REQUIRED') tabText = 'Tripo 账号（待登录）';
+      else if (s.tripoBlocked === 'CAPTCHA_OR_CHALLENGE') tabText = 'Tripo 账号（需验证）';
+      else if (Number.isInteger(s.tripoCredits)) tabText = `Tripo 已就绪 · 积分 ${s.tripoCredits}`;
+      else if (s.tripoReady) tabText = 'Tripo 已就绪';
+      $('tripoTabLabel').textContent = tabText;
+
+      const bPill = $('blenderPill');
+      if (s.blenderFound) {
+        bPill.className = 'pill blender-ok';
+        bPill.textContent = '✓ Blender 已连接';
+        bPill.title = `当前 Blender：${s.blenderPath || ''}（点击可更换）`;
+      } else {
+        bPill.className = 'pill blender-warn';
+        bPill.textContent = '⚠ 点击配置 Blender 路径';
+        bPill.title = '尚未指定 Blender 可执行文件，点击浏览选择本机的 blender.exe';
+      }
+
+      if (s.userDownloadsDir) $('btnDownloads').title = `打开导出目录：${s.userDownloadsDir}`;
+      if (s.projectsDir) $('btnProjects').title = `打开项目目录：${s.projectsDir}`;
+      if (s.modsDir) $('btnMods').title = `打开 Mods 扩展目录：${s.modsDir}`;
+
+      // GitHub Update button state
+      const uBtn = $('btnUpdate');
+      const u = s.update || { status: 'idle' };
+      uBtn.className = 'btn';
+      if (u.status === 'checking') {
+        uBtn.textContent = '⏳ 检查中…';
+      } else if (u.status === 'available') {
+        uBtn.className = 'btn update-avail';
+        uBtn.textContent = `⬇ 更新 v${u.version}`;
+        uBtn.title = `发现 GitHub 新版本 v${u.version}，点击开始下载`;
+      } else if (u.status === 'downloading') {
+        uBtn.textContent = `⬇ 下载 ${Math.round(u.percent || 0)}%`;
+      } else if (u.status === 'downloaded') {
+        uBtn.className = 'btn update-ready';
+        uBtn.textContent = `🚀 重启安装 v${u.version}`;
+        uBtn.title = '新版本已就绪，点击立即重启升级（Projects 与 Mods 目录完整保留）';
+      } else if (u.status === 'up-to-date') {
+        uBtn.textContent = '✓ 已是最新';
+      } else {
+        uBtn.textContent = '🔄 检查更新';
+      }
+
+      const bp = $('blockedPill');
+      if (s.tripoBlocked) {
+        bp.hidden = false;
+        bp.textContent = s.tripoBlocked === 'AUTH_REQUIRED'
+          ? '⚠ 请在 Tripo 工作区登录一次邮箱账号（自动持久保存）'
+          : '⚠ 请在 Tripo 工作区点击完成人机验证后继续';
+      } else {
+        bp.hidden = true;
+      }
+
+      const ap = $('activityPill');
+      if (s.tripoActivity?.active && s.tripoActivity.label) {
+        ap.hidden = false;
+        ap.textContent = `⚡ Tripo 后台执行中：${s.tripoActivity.label}`;
+      } else {
+        ap.hidden = true;
+      }
+
+      const dp = $('downloadPill');
+      if (s.download?.active) {
+        dp.hidden = false;
+        const pct = s.download.total > 0 ? Math.round((s.download.received / s.download.total) * 100) + '%' : fmtMb(s.download.received);
+        dp.textContent = `⬇ 正在接收 ${s.download.filename || '文件'} ${pct} (${fmtMb(s.download.received)})`;
+      } else {
+        dp.hidden = true;
+      }
+
+      const sp = $('savedPill');
+      if (s.lastSavedDownload?.filename && !s.download?.active) {
+        sp.hidden = false;
+        sp.textContent = `✓ 已存至导出目录：${s.lastSavedDownload.filename}（点击定位）`;
+      } else {
+        sp.hidden = true;
+      }
+    }
+
+    $('tabWorkbench').onclick = () => window.morphogemDesktop.switchTab('workbench');
+    $('tabTripo').onclick = () => window.morphogemDesktop.switchTab('tripo');
+    $('blenderPill').onclick = () => window.morphogemDesktop.chooseBlenderExe();
+    $('blockedPill').onclick = () => window.morphogemDesktop.switchTab('tripo');
+    $('savedPill').onclick = () => window.morphogemDesktop.revealLastDownload();
+    $('btnProjects').onclick = () => window.morphogemDesktop.openProjectsDir();
+    $('btnMods').onclick = () => window.morphogemDesktop.openModsDir();
+    $('btnDownloads').onclick = () => window.morphogemDesktop.openDownloadsDir();
+    $('btnChooseDownloads').onclick = () => window.morphogemDesktop.chooseDownloadsDir();
+    $('btnReload').onclick = () => window.morphogemDesktop.reloadActive();
+    $('btnUpdate').onclick = () => {
+      const st = lastState?.update?.status;
+      if (st === 'available') window.morphogemDesktop.downloadUpdate();
+      else if (st === 'downloaded') window.morphogemDesktop.quitAndInstallUpdate();
+      else window.morphogemDesktop.checkUpdates();
+    };
+    $('btnCopyMcp').onclick = async () => {
+      const ok = await window.morphogemDesktop.copyMcpConfig();
+      if (ok) {
+        const b = $('btnCopyMcp');
+        const old = b.textContent;
+        b.textContent = '✓ 已复制 MCP 配置';
+        b.classList.add('copied');
+        setTimeout(() => { b.textContent = old; b.classList.remove('copied'); }, 2200);
+      }
+    };
+
+    window.morphogemDesktop.onState(render);
+    window.morphogemDesktop.getState().then(render);
+  </script>
+</body>
+</html>

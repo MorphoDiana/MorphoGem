@@ -1,0 +1,74 @@
+{
+  "format": "morphogem-mod-v1",
+  "id": "mecha-fantasy-arsenal",
+  "name": "幻想武装与流光羽翼包",
+  "version": "1.0.0",
+  "author": "MorphoGem Official",
+  "description": "针对大剑、法杖、枪械、盾牌、机甲推进翼与多层神圣羽翼的高精度独立拆件分支与硬表面正交厚度规范。",
+  "tags": ["武器道具", "翅膀背饰", "硬表面"],
+  "promptRulesFile": "prompt-rules.md",
+  "templates": [],
+  "customNodes": [
+    {
+      "id": "arsenal-weapon-90",
+      "baseType": "part_views",
+      "badge": "武装Mod",
+      "title": "⚔️ 长柄神兵 / 法杖垂直正交拆图",
+      "description": "强制 90° 绝对垂直居中 + 去手部遮挡 + 侧面护手/刃脊立体厚度",
+      "params": {
+        "partName": "独立主武器",
+        "promptHint": "彻底剥离握持手指补全完整握柄护手，主轴严格90°垂直居中立放，侧面画足剑脊与宝石厚度",
+        "pose": "natural",
+        "resolution": 2048
+      },
+      "craftRules": [
+        "长杆武装正交铁律：无论原画斜拿角度如何，四视图中器物主轴必须 100% 严格 90° 垂直居中立放；left/right 侧面视图必须明确画出护手前后包覆体积与刃身脊线厚度（严禁画成 1px 直线）。"
+      ]
+    }
+  ],
+  "branches": [
+    {
+      "id": "wings-hd-branch",
+      "badge": "羽翼Mod",
+      "name": "🦋 高精对称双翼「2K拆图 + 300万面8K建模」分支",
+      "description": "一键插入对称展开翅膀四视图 + H3.5 300万面 8K 贴图 Tripo 节点并自动连入主立绘与合体终点",
+      "autoWire": { "connectSource": true, "connectStyle": true, "connectRatio": false, "connectAssembly": true },
+      "craftRules": [
+        "羽翼/推进翼正交铁律：成对翅膀以左右水平对称展开姿态绘制，中央保留清晰的背部挂接根部结构；侧面视图需交代羽轴前后弧度与合理层叠厚度，羽毛镂空缝隙彻底抠成透明。"
+      ],
+      "nodes": [
+        {
+          "relId": "w_views",
+          "type": "part_views",
+          "dx": 0,
+          "dy": 0,
+          "params": {
+            "partName": "对称展开双翼",
+            "promptHint": "剥离人物躯干，双翼左右水平对称展开，保留中央连接根部，侧面交代羽层厚度",
+            "pose": "natural",
+            "resolution": 2048
+          }
+        },
+        {
+          "relId": "w_mesh",
+          "type": "tripo_mesh",
+          "dx": 360,
+          "dy": 0,
+          "params": {
+            "title": "Tripo · 对称展开双翼",
+            "quality": "high",
+            "aiModel": "H3.5",
+            "polyFaces": 3000000,
+            "textureSize": 8192,
+            "pbr": true,
+            "removeLighting": false,
+            "candidateCount": 1
+          }
+        }
+      ],
+      "edges": [
+        { "from": "w_views", "fromPort": "views", "to": "w_mesh", "toPort": "views" }
+      ]
+    }
+  ]
+}
