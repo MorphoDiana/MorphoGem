@@ -8,6 +8,10 @@
   --border-strong: rgba(96, 165, 250, 0.42);
   --text-main: #f1f5f9;
   --text-muted: #94a3b8;
+  --field: #131c31;
+  --ink: #f1f5f9;
+  --line: rgba(148, 163, 184, 0.22);
+  --muted: #94a3b8;
   --accent-blue: #3b82f6;
   --accent-cyan: #06b6d4;
   --accent-emerald: #10b981;
@@ -17,6 +21,10 @@
 
 *, *::before, *::after {
   box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 html, body {
@@ -34,13 +42,14 @@ html, body {
 
 /* --- Unified Single-Row 54px Studio Header --- */
 .studio-header {
+  position: relative;
   height: var(--header-h);
   padding: 0 14px;
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(11, 17, 32, 0.98));
   border-bottom: 1px solid var(--border-subtle);
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(260px, 1fr);
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   z-index: 40;
 }
@@ -49,7 +58,9 @@ html, body {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 0 1 auto;
   min-width: 0;
+  overflow: hidden;
 }
 
 .brand-logo {
@@ -126,6 +137,7 @@ html, body {
   display: flex;
   justify-content: center;
   align-items: center;
+  flex: 0 0 auto;
 }
 
 .header-actions {
@@ -133,6 +145,7 @@ html, body {
   justify-content: flex-end;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
   flex-wrap: nowrap;
 }
 

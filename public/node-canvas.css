@@ -1,117 +1,7 @@
-/* Unified MorphoGem Studio Shell + Visual Node-Graph Canvas ("连连看" Pipeline Editor) */
+/* Unified MorphoGem Visual Node-Graph Canvas ("连连看" Pipeline Editor) */
 
-/* 1. Unified 54px Studio Top Header & Full-Width Workspace Layout */
-body.preview {
-  grid-template-columns: minmax(0, 1fr) !important;
-  grid-template-rows: 54px minmax(0, 1fr) !important;
-  font-family: "Microsoft YaHei UI", Inter, "Segoe UI", system-ui, sans-serif !important;
-}
-
-body.preview .sidebar,
-body.preview .page-topbar {
+[hidden] {
   display: none !important;
-}
-
-body.preview .app-content {
-  grid-column: 1 / -1 !important;
-  grid-row: 2 !important;
-  width: 100% !important;
-  height: calc(100dvh - 54px) !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  max-width: none !important;
-  overflow: hidden !important;
-}
-
-body.preview > header {
-  position: relative !important;
-  grid-column: 1 / -1 !important;
-  grid-row: 1 !important;
-  height: 54px !important;
-  min-height: 54px !important;
-  padding: 0 14px !important;
-  gap: 12px !important;
-  display: flex !important;
-  flex-wrap: nowrap !important;
-  align-items: center !important;
-  justify-content: space-between !important;
-  background: #0d1424 !important;
-  border-bottom: 1px solid #1e293b !important;
-  color: #f1f5f9 !important;
-  z-index: 60 !important;
-}
-
-:root[data-theme="light"] body.preview > header {
-  background: #ffffff !important;
-  border-bottom: 1px solid #dce3ef !important;
-  color: #0f172a !important;
-}
-
-body.preview > header .identity {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-body.preview > header .brand-name {
-  font-size: 15px;
-  font-weight: 800;
-  letter-spacing: -0.2px;
-  background: linear-gradient(110deg, #38bdf8 0%, #818cf8 55%, #c084fc 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-body.preview > header .brand-divider {
-  height: 18px;
-  width: 1px;
-  background: rgba(148, 163, 184, 0.28);
-  margin: 0 2px;
-  flex-shrink: 0;
-}
-
-.header-project-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border-radius: 7px;
-  background: rgba(30, 41, 59, 0.72);
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  min-width: 110px;
-  max-width: 240px;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-:root[data-theme="light"] .header-project-chip {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
-}
-.header-project-chip:focus-within {
-  border-color: #38bdf8;
-  background: rgba(15, 23, 42, 0.95);
-}
-:root[data-theme="light"] .header-project-chip:focus-within {
-  background: #ffffff;
-  border-color: #2563eb;
-}
-.header-project-chip svg {
-  width: 13.5px;
-  height: 13.5px;
-  color: #38bdf8;
-  flex-shrink: 0;
-}
-#sidebarProjectName {
-  border: 0 !important;
-  background: transparent !important;
-  color: inherit !important;
-  font-size: 12.5px !important;
-  font-weight: 600 !important;
-  padding: 2px 2px !important;
-  width: 100% !important;
-  min-width: 80px !important;
-  outline: none !important;
 }
 
 .header-center-slot {
@@ -119,13 +9,6 @@ body.preview > header .brand-divider {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-}
-@media (min-width: 1220px) {
-  .header-center-slot {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-  }
 }
 
 .workspace-mode-switch {
@@ -138,15 +21,12 @@ body.preview > header .brand-divider {
   gap: 4px;
   margin: 0;
 }
-:root[data-theme="light"] .workspace-mode-switch {
-  background: #eef2f8;
-  border-color: #cbd5e1;
-}
+
 .workspace-mode-btn {
   border: none;
   background: transparent;
   color: #94a3b8;
-  padding: 5px 14px;
+  padding: 5px 13px;
   border-radius: 6px;
   font-size: 12.5px;
   font-weight: 700;
@@ -155,196 +35,30 @@ body.preview > header .brand-divider {
   transition: all 0.15s ease;
   white-space: nowrap;
 }
-:root[data-theme="light"] .workspace-mode-btn {
-  color: #475569;
-}
+
 .workspace-mode-btn:hover {
   color: #f8fafc;
   background: rgba(51, 65, 85, 0.45);
 }
-:root[data-theme="light"] .workspace-mode-btn:hover {
-  color: #0f172a;
-  background: rgba(203, 213, 225, 0.5);
-}
+
 .workspace-mode-btn.active {
   background: linear-gradient(135deg, #2563eb, #4f46e5);
   color: #ffffff !important;
   box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
 }
 
-body.preview > header .header-actions {
-  grid-column: auto !important;
-  grid-row: auto !important;
-  margin: 0 !important;
-  display: flex !important;
-  flex-wrap: nowrap !important;
-  align-items: center !important;
-  gap: 6px !important;
-  flex-shrink: 0;
-}
-
-body.preview > header .header-actions button,
-body.preview > header .header-actions .file-button {
-  min-height: 32px !important;
-  padding: 5px 10px !important;
-  font-size: 12px !important;
-  font-weight: 600 !important;
-  border-radius: 7px !important;
-  gap: 5px !important;
-  background: #172033;
-  border: 1px solid #2c3a52;
-  color: #e2e8f0;
-}
-:root[data-theme="light"] body.preview > header .header-actions button,
-:root[data-theme="light"] body.preview > header .header-actions .file-button {
-  background: #f8fafc;
-  border-color: #cbd5e1;
-  color: #1e293b;
-}
-body.preview > header .header-actions button:hover:not(:disabled),
-body.preview > header .header-actions .file-button:hover {
-  background: #24324c;
-  border-color: #475569;
-  color: #ffffff;
-}
-:root[data-theme="light"] body.preview > header .header-actions button:hover:not(:disabled),
-:root[data-theme="light"] body.preview > header .header-actions .file-button:hover {
-  background: #e2e8f0;
-  border-color: #94a3b8;
-  color: #0f172a;
-}
-body.preview > header .header-actions #previewSettings {
-  border-color: rgba(139, 92, 246, 0.45);
-  background: rgba(124, 58, 237, 0.16);
-  color: #ede9fe;
-}
-:root[data-theme="light"] body.preview > header .header-actions #previewSettings {
-  background: #f3e8ff;
-  border-color: #c084fc;
-  color: #5b21b6;
-}
-body.preview > header .header-actions #previewSettings:hover {
-  background: rgba(124, 58, 237, 0.34);
-  border-color: #a78bfa;
-  color: #ffffff;
-}
-
-body.preview > header #saveStatus {
-  flex: 0 1 auto !important;
-  width: auto !important;
-  max-width: 118px !important;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.12);
-  font-size: 11px !important;
-  text-align: center !important;
-  margin: 0 2px 0 0 !important;
-}
-
-/* 2. Harmonious 3D Assembly & Proportion Viewport (Full-Bleed + Clean Right Inspector) */
-body.preview main.model-layout {
-  margin: 0 !important;
-  border: 0 !important;
-  border-radius: 0 !important;
-  width: 100% !important;
-  height: 100% !important;
-  grid-template-columns: minmax(0, 1fr) 338px !important;
-}
-
-body.preview #journeyPanel,
-body.preview .journey-actions,
-body.preview #placementExportBranch {
-  display: none !important;
-}
-
-#previewLoading {
-  inset: 54px 0 0 0 !important;
-}
-
-.ng-viewport-export-card {
-  display: grid;
-  gap: 10px;
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
-}
-
-.placement-studio-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-}
-.placement-studio-head h1 {
-  font-size: 14.5px !important;
-  font-weight: 700 !important;
-  margin: 0 0 4px !important;
-}
-.placement-studio-head small {
-  display: block;
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--muted);
-}
-.back-canvas-pill {
-  min-height: 28px !important;
-  padding: 4px 9px !important;
-  font-size: 11px !important;
-  font-weight: 600 !important;
-  border-radius: 6px !important;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-#modelEmpty .empty-3d-sub {
-  max-width: 380px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--muted);
-  margin: -6px 0 6px;
-  line-height: 1.6;
-}
-#modelEmpty .empty-3d-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-.settings-card-group {
-  background: var(--field);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 12px 14px;
-}
-.settings-credit-bar {
-  margin-top: 18px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-  display: flex;
-  justify-content: flex-end;
-}
-
-/* 3. Node-Graph Active Mode */
-body.node-graph-active #agentWorkingBanner,
-body.node-graph-active #imageWorkspace,
-body.node-graph-active #handoffWorkspace,
-body.node-graph-active main {
-  display: none !important;
-}
-
 #nodeGraphWorkspace {
   display: none;
   flex-direction: column;
   width: 100%;
-  height: calc(100dvh - 54px);
+  height: 100%;
   background: #0b1120;
   color: #e2e8f0;
   position: relative;
   overflow: hidden;
   font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
 }
+
 body.node-graph-active #nodeGraphWorkspace {
   display: flex;
 }

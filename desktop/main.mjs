@@ -907,15 +907,29 @@ app.whenReady().then(async () => {
       });
       await new Promise(r => setTimeout(r, 350));
       const uaCheck = await tripoView.webContents.executeJavaScript('({ ua: navigator.userAgent, webdriver: navigator.webdriver, w: window.innerWidth, h: window.innerHeight })');
-      const wbCheck = await workbenchView.webContents.executeJavaScript(`({
-        title: document.title,
-        brandName: document.querySelector('#studioBrandName')?.textContent?.trim() || '',
-        hasLocaleSwitch: !!document.getElementById('localeSwitchBtn'),
-        hasModsBtn: !!document.getElementById('ngModsBtn'),
-        hasViewportSection: !!document.getElementById('viewport3DWorkspace'),
-        nodeGraphActive: document.body.classList.contains('node-graph-active'),
-        renderedNodeCards: document.querySelectorAll('#ngNodesLayer .ng-node').length,
-      })`);
+      const wbCheck = await workbenchView.webContents.executeJavaScript(`(() => {
+        const ws = document.getElementById('nodeGraphWorkspace');
+        const wsRect = ws ? ws.getBoundingClientRect() : { width: 0, height: 0 };
+        const centerRect = document.getElementById('headerCenterSlot')?.getBoundingClientRect() || { left: 0, right: 0 };
+        const actionsFirstBtn = document.querySelector('.header-actions .hdr-btn')?.getBoundingClientRect() || { left: 9999 };
+        const beforeCount = document.querySelectorAll('#ngNodesLayer .ng-node').length;
+        document.getElementById('ngQuickAddBtn')?.click();
+        const firstQuickItem = document.querySelector('#ngQuickList .ng-quick-item');
+        firstQuickItem?.click();
+        const afterCount = document.querySelectorAll('#ngNodesLayer .ng-node').length;
+        return {
+          title: document.title,
+          brandName: document.querySelector('#studioBrandName')?.textContent?.trim() || '',
+          hasLocaleSwitch: !!document.getElementById('localeSwitchBtn'),
+          hasModsBtn: !!document.getElementById('ngModsBtn'),
+          hasViewportSection: !!document.getElementById('viewport3DWorkspace'),
+          nodeGraphActive: document.body.classList.contains('node-graph-active'),
+          canvasVisibleHeight: Math.round(wsRect.height),
+          headerNoOverlap: centerRect.right <= actionsFirstBtn.left,
+          renderedNodeCardsBefore: beforeCount,
+          renderedNodeCardsAfterAdd: afterCount,
+        };
+      })()`);
       const sessRes = await fetch(`${workbenchSrv.url}/api/session`, { headers: { host: new URL(workbenchSrv.url).host } });
       const sessJson = await sessRes.json();
       const smokeResult = {
@@ -930,8 +944,8 @@ app.whenReady().then(async () => {
         cleanUserAgent: !uaCheck.ua.includes('Electron') && uaCheck.ua.includes('Chrome/'),
         webdriverHidden: uaCheck.webdriver === false,
       };
-      if (!wbCheck.hasModsBtn || wbCheck.renderedNodeCards < 4) {
-        throw new Error('Workbench UI failed to mount Node Canvas: ' + JSON.stringify(wbCheck));
+      if (!wbCheck.hasModsBtn || wbCheck.canvasVisibleHeight < 300 || !wbCheck.headerNoOverlap || wbCheck.renderedNodeCardsAfterAdd <= wbCheck.renderedNodeCardsBefore) {
+        throw new Error('Workbench UI layout or node-creation check failed: ' + JSON.stringify(wbCheck));
       }
       console.log('DESKTOP_SMOKE_OK ' + JSON.stringify(smokeResult));
       setTimeout(() => app.quit(), 250);
