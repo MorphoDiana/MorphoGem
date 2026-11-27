@@ -152,10 +152,6 @@ app.setPath('userData', paths.chromiumDir);
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
 app.commandLine.appendSwitch('remote-debugging-port', process.env.MORPHOGEM_INTERNAL_CDP_PORT || '0');
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
-// Tripo uses FedCM for Google sign-in, but this runtime cannot obtain a FedCM
-// token (get() rejects with NetworkError). Disabling FedCM makes Google
-// Identity Services fall back to the ux_mode=popup OAuth flow instead.
-app.commandLine.appendSwitch('disable-features', 'FedCm,FedCmAutoSignin,FedCmIdpSigninStatus');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 
@@ -175,87 +171,10 @@ const chromeFullVer = process.versions.chrome || '134.0.6998.89';
 const chromeMajorVer = chromeFullVer.split('.')[0];
 const CLEAN_CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeFullVer} Safari/537.36`;
 
-// The Google account page reads navigator.userAgentData.brands to decide whether
-// the client is trusted. Electron reports only Chromium and Not:A-Brand, with no
-// "Google Chrome" entry, so the page refuses the sign-in as untrusted. The
-// sec-ch-ua request headers were already patched, but the JS-side reading was not.
-//
-// Apply the full metadata through Emulation.setUserAgentOverride, which covers
-// both the browser-process and the page-level reading. This is done over CDP
-// rather than in preload on purpose: overriding navigator.userAgentData from
-// JavaScript fails the GSI self-check and stops the sign-in button rendering.
-const CHROME_UA_METADATA = {
-  brands: [
-    { brand: 'Not-A.Brand', version: '99' },
-    { brand: 'Chromium', version: chromeMajorVer },
-    { brand: 'Google Chrome', version: chromeMajorVer },
-  ],
-  fullVersionList: [
-    { brand: 'Not-A.Brand', version: '99.0.0.0' },
-    { brand: 'Chromium', version: chromeFullVer },
-    { brand: 'Google Chrome', version: chromeFullVer },
-  ],
-  fullVersion: chromeFullVer,
-  platform: 'Windows',
-  platformVersion: '15.0.0',
-  architecture: 'x86',
-  model: '',
-  mobile: false,
-  bitness: '64',
-  wow64: false,
-};
-
-const hardenedTripoContents = new WeakSet();
-
-async function hardenTripoWebContents(contents) {
-  if (!contents || contents.isDestroyed()) return;
-  if (hardenedTripoContents.has(contents)) return;
-  hardenedTripoContents.add(contents);
-  try {
-    if (!contents.debugger.isAttached()) contents.debugger.attach('1.3');
-    await contents.debugger.sendCommand('Emulation.setUserAgentOverride', {
-      userAgent: CLEAN_CHROME_UA,
-      acceptLanguage: 'zh-CN,zh;q=0.9,en;q=0.8',
-      platform: 'Win32',
-      userAgentMetadata: CHROME_UA_METADATA,
-    });
-    // Release the debugger immediately. Holding it permanently makes the
-    // in-process puppeteer client (tripo_mcp TripoController) unable to attach
-    // to the same target, which breaks the one-click 3D nodes and every MCP
-    // tool. The Emulation override is a target-level setting and survives
-    // detach, so later navigations keep the spoofed client hints.
-    contents.debugger.detach();
-  } catch {
-    // Debugger already held by someone else (e.g. DevTools open). Skip silently.
-  }
-}
-
-// Origins that carry the Google OAuth handshake. These must stay inside the
-// app so the popup keeps the persist:tripo cookies and window.opener.
-// Note: content-autofill.googleapis.com is deliberately NOT listed. It is a
-// GSI autofill probe, not an auth endpoint, and allowing it here would open
-// that probe as an in-app navigation.
-const TRIPO_AUTH_HOSTS = [
-  'accounts.google.com',
-  'accounts.youtube.com',
-  'oauth2.googleapis.com',
-];
-
-function isTripoAuthUrl(rawUrl) {
-  try {
-    const u = new URL(rawUrl);
-    if (u.protocol !== 'https:') return false;
-    return TRIPO_AUTH_HOSTS.some(h => u.hostname === h || u.hostname.endsWith('.' + h));
-  } catch {
-    return false;
-  }
-}
-
 let win = null;
 let toolbarView = null;
 let workbenchView = null;
 let tripoView = null;
-let tripoAuthWindow = null;
 let workbenchSrv = null;
 let tripoDaemon = null;
 let jobsModRef = null;
@@ -631,6 +550,7 @@ async function refreshTripoQuickState() {
       const hasTurnstile = !!document.querySelector('iframe[src*="challenges.cloudflare.com"], .cf-turnstile, #challenge-running')
         || /verify you are human|just a moment|請稍候|请稍候|checking your browser/i.test(title);
       if (hasTurnstile && bodyText.length < 800) return { blocked: 'CAPTCHA_OR_CHALLENGE', credits: null, ready: false };
+      const buttons = [...document.querySelectorAll('button, a')].map(el => (el.innerText || '').trim());
       // A visible "Sign in" button in the header is the reliable signed-out
       // signal. Testing whether the workspace exists does not work: Tripo
       // renders <main> and the Generate button even when signed out, so that
@@ -662,9 +582,8 @@ async function refreshTripoQuickState() {
       const hasAvatar = !!header && [...header.querySelectorAll('img, [class*="avatar" i], [class*="Avatar"]')]
         .some(el => laidOut(el) && !/tripo-wordmark|logo/i.test((el.src || el.className || '').toString()));
 
-      // When there is no <header> at all (e.g. the --smoke-test stub page), fall
-      // back to the original heuristic so the smoke assertions keep their
-      // previous behaviour.
+      // Pages without a <header> (the --smoke-test stub) keep the old heuristic
+      // so the smoke assertions observe the same values as before.
       const hasWorkspace = !!document.querySelector('main') &&
         [...document.querySelectorAll('button, a')].some(el => /generate|hd model|export/i.test(el.innerText || ''));
       const loggedIn = header
@@ -969,45 +888,6 @@ app.whenReady().then(async () => {
     });
     tripoView.webContents.setUserAgent(CLEAN_CHROME_UA);
     tripoView.webContents.setWindowOpenHandler(({ url }) => {
-      // The Google popup must stay inside the app and share the persist:tripo
-      // session. The previous version sent every non-Tripo origin to
-      // shell.openExternal(), which caused two separate problems:
-      //   1. GSI retries two URLs after FedCM fails (oauth2/v2/auth then
-      //      gsi/select), so two external browser windows opened.
-      //   2. Once the popup ran outside the app it lost both the partition
-      //      cookies and window.opener, so a completed login could never post
-      //      the id_token back and the app stayed signed out.
-      if (isTripoAuthUrl(url)) {
-        if (tripoAuthWindow && !tripoAuthWindow.isDestroyed()) {
-          // Reuse the same child window for the retry, so only one popup shows.
-          void tripoAuthWindow.loadURL(url);
-          if (tripoAuthWindow.isMinimized()) tripoAuthWindow.restore();
-          tripoAuthWindow.show();
-          tripoAuthWindow.focus();
-          return { action: 'deny' };
-        }
-        return {
-          action: 'allow',
-          overrideBrowserWindowOptions: {
-            width: 520,
-            height: 720,
-            minWidth: 420,
-            minHeight: 560,
-            // No parent: win is a BaseWindow, and the parent option requires a
-            // BrowserWindow. Passing it throws and the popup never opens.
-            autoHideMenuBar: true,
-            backgroundColor: '#ffffff',
-            title: 'Tripo Sign in',
-            webPreferences: {
-              session: tripoSes,
-              preload: path.join(__dirname, 'preload-tripo.cjs'),
-              sandbox: true,
-              contextIsolation: true,
-              nodeIntegration: false,
-            },
-          },
-        };
-      }
       if (url.startsWith('https://accounts.tripo3d.ai')) {
         tripoView.webContents.loadURL(url);
         setActiveTab('tripo');
@@ -1019,22 +899,6 @@ app.whenReady().then(async () => {
       }
       shell.openExternal(url);
       return { action: 'deny' };
-    });
-
-    tripoView.webContents.on('did-create-window', (childWindow) => {
-      tripoAuthWindow = childWindow;
-      try { childWindow.setMenuBarVisibility(false); } catch { /* ignore */ }
-      childWindow.webContents.setUserAgent(CLEAN_CHROME_UA);
-      void hardenTripoWebContents(childWindow.webContents);
-      const syncState = () => { void refreshTripoQuickState(); };
-      childWindow.webContents.on('did-navigate', syncState);
-      childWindow.webContents.on('did-navigate-in-page', syncState);
-      childWindow.on('closed', () => {
-        if (tripoAuthWindow === childWindow) tripoAuthWindow = null;
-        // The page may have just received the token; re-sync twice.
-        setTimeout(syncState, 800);
-        setTimeout(syncState, 2500);
-      });
     });
 
     workbenchView.webContents.setWindowOpenHandler(({ url }) => {
@@ -1064,7 +928,6 @@ app.whenReady().then(async () => {
 
     tripoView.webContents.on('did-finish-load', () => { void refreshTripoQuickState(); });
     tripoView.webContents.on('did-navigate-in-page', () => { void refreshTripoQuickState(); });
-    void hardenTripoWebContents(tripoView.webContents);
 
     const cdp = await readInternalCdpWsEndpoint();
     const daemonMod = await import(pathToFileURL(path.join(paths.appCoreDir, 'tripo_mcp', 'daemon.mjs')).href);
