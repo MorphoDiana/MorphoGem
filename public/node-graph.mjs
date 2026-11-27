@@ -4,6 +4,29 @@ import {safePath, sha256} from './mgem-project.mjs';
 export const GRAPH_VIEWS_4 = Object.freeze(['front', 'left', 'right', 'back']);
 export const GRAPH_VIEWS_3 = Object.freeze(['front', 'side', 'back']);
 
+export const HEAD_BODY_RATIO_PRESETS = Object.freeze([
+  {id: 'keep', numeric: null, zh: '保持原画比例', en: 'Keep Source Ratio'},
+  {id: '2.0', numeric: 2.0, zh: '2.0 头身 · 超萌粘土豆豆人', en: '2.0 Heads · Super Chibi / Nendoroid'},
+  {id: '2.5', numeric: 2.5, zh: '2.5 头身 · 潮玩盲盒手办', en: '2.5 Heads · Blindbox Chibi Figure'},
+  {id: '3.0', numeric: 3.0, zh: '3.0 头身 · SD 游戏小人', en: '3.0 Heads · SD Game Character'},
+  {id: '4.0', numeric: 4.0, zh: '4.0 头身 · 轻Q版二游体型', en: '4.0 Heads · Semi-Chibi'},
+  {id: '6.0', numeric: 6.0, zh: '6.0 头身 · 青春少女/少年', en: '6.0 Heads · Youth Anime'},
+  {id: '6.8', numeric: 6.8, zh: '6.8 头身 · 二次元标准体型', en: '6.8 Heads · Standard Anime'},
+  {id: '7.5', numeric: 7.5, zh: '7.5 头身 · 修长成女/成男', en: '7.5 Heads · Tall Mature Anime'},
+  {id: '8.5', numeric: 8.5, zh: '8.5 头身 · 超修长时装/机甲', en: '8.5 Heads · Heroic / Fashion 8.5H'},
+  {id: 'custom', numeric: null, zh: '自定义精确头身数…', en: 'Custom Head Count...'},
+]);
+
+export function resolveNumericHeadBodyRatio(presetVal, customVal = 6.8) {
+  if (!presetVal || presetVal === 'keep') return null;
+  if (presetVal === 'custom') {
+    const c = Number(customVal);
+    return Number.isFinite(c) ? Math.max(1.5, Math.min(9.5, c)) : 6.8;
+  }
+  const n = Number(presetVal);
+  return Number.isFinite(n) && n >= 1.5 && n <= 9.5 ? n : null;
+}
+
 export const NODE_SPECS = Object.freeze({
   source_image: {
     type: 'source_image',
@@ -12,6 +35,14 @@ export const NODE_SPECS = Object.freeze({
     defaultTitle: '主立绘（目标原画）',
     inputs: [],
     outputs: [{id: 'image', label: '主设计图', kind: 'image'}],
+  },
+  mask_ref: {
+    type: 'mask_ref',
+    category: 'input',
+    badge: 'Mask遮罩',
+    defaultTitle: 'Mask 分区遮罩图',
+    inputs: [],
+    outputs: [{id: 'mask', label: '部件 Mask', kind: 'mask'}],
   },
   style_ref: {
     type: 'style_ref',
@@ -24,7 +55,7 @@ export const NODE_SPECS = Object.freeze({
   ratio_ref: {
     type: 'ratio_ref',
     category: 'input',
-    badge: '参考',
+    badge: '旧版兼容',
     defaultTitle: '头身比参考图',
     inputs: [],
     outputs: [{id: 'ratio', label: '头身比例', kind: 'ratio'}],
@@ -36,8 +67,8 @@ export const NODE_SPECS = Object.freeze({
     defaultTitle: '新拆分部件',
     inputs: [
       {id: 'source', label: '主设计图', kind: 'image'},
-      {id: 'style', label: '画风参考', kind: 'style'},
-      {id: 'ratio', label: '头身比参考', kind: 'ratio'},
+      {id: 'mask', label: 'Mask 遮罩（可选）', kind: 'mask'},
+      {id: 'style', label: '画风参考（可选）', kind: 'style'},
     ],
     outputs: [{id: 'views', label: '四方向视图', kind: 'views'}],
   },
@@ -48,8 +79,7 @@ export const NODE_SPECS = Object.freeze({
     defaultTitle: '全身合体比例三视图',
     inputs: [
       {id: 'source', label: '主设计图', kind: 'image'},
-      {id: 'style', label: '画风参考', kind: 'style'},
-      {id: 'ratio', label: '头身比参考', kind: 'ratio'},
+      {id: 'style', label: '画风参考（可选）', kind: 'style'},
     ],
     outputs: [{id: 'guide', label: '三视图参考尺', kind: 'guide'}],
   },
@@ -87,29 +117,57 @@ export const NODE_SPECS = Object.freeze({
 
 const uid = prefix => `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 
-export function defaultPlacementForPartName(name = '', index = 0) {
+export function defaultPlacementForPartName(name = '', index = 0, ratioNumeric = null, totalHeight = 1.65) {
   const n = String(name).toLowerCase();
-  if (/裸脸|裸头|脸|面部|head|face/.test(n) && !/发|hair/.test(n)) return [0, 0, 1.56];
-  if (/发|hair|头饰|帽|冠/.test(n)) return [0, 0, 1.56];
-  if (/上衣|上身|上半身|胸甲|披风|upper/.test(n)) return [0, 0, 1.18];
-  if (/下裙|下装|下半身|裤|腿|靴|skirt|lower/.test(n)) return [0, 0, 0.48];
-  if (/翼|翅膀|背饰|法环|光环|wing/.test(n)) return [0, 0.16, 1.16];
-  if (/剑|刀|枪|弓|杖|盾|武器|weapon/.test(n)) return [0.55, 0, 0.88];
-  if (/身|体|服装|汉服|素体|body|char/.test(n)) return [0, 0, 0.74];
-  return [index * 0.02, 0, 0.85];
+  const r = Number.isFinite(ratioNumeric) && ratioNumeric >= 1.5 ? ratioNumeric : 6.6;
+  const h = Number.isFinite(totalHeight) && totalHeight > 0.1 ? totalHeight : 1.65;
+  const headH = h / r;
+  const bodyH = Math.max(0.15, h - headH * 0.82);
+
+  if (/裸脸|裸头|脸|面部|head|face/.test(n) && !/发|hair/.test(n)) return [0, 0, Number((h - headH * 0.5).toFixed(3))];
+  if (/发|hair|头饰|帽|冠/.test(n)) return [0, 0, Number((h - headH * 0.52).toFixed(3))];
+  if (/上衣|上身|上半身|胸甲|披风|upper/.test(n)) return [0, 0, Number((bodyH * 0.76).toFixed(3))];
+  if (/下裙|下装|下半身|裤|腿|靴|skirt|lower/.test(n)) return [0, 0, Number((bodyH * 0.34).toFixed(3))];
+  if (/翼|翅膀|背饰|法环|光环|wing/.test(n)) return [0, 0.16, Number((bodyH * 0.75).toFixed(3))];
+  if (/剑|刀|枪|弓|杖|盾|武器|weapon/.test(n)) return [0.55, 0, Number((h * 0.52).toFixed(3))];
+  if (/身|体|服装|汉服|素体|body|char/.test(n)) return [0, 0, Number((bodyH * 0.5).toFixed(3))];
+  return [index * 0.02, 0, Number((h * 0.52).toFixed(3))];
 }
 
-export function defaultHeightForPartName(name = '') {
+export function defaultHeightForPartName(name = '', ratioNumeric = null, totalHeight = 1.65) {
   const n = String(name).toLowerCase();
-  if (/裸脸|裸头|脸|面部|head|face/.test(n) && !/发|hair/.test(n)) return 0.25;
-  if (/发|hair/.test(n)) return 0.65;
-  if (/帽|冠|头饰/.test(n)) return 0.30;
-  if (/上衣|上身|上半身|upper/.test(n)) return 0.78;
-  if (/下裙|下装|下半身|skirt|lower/.test(n)) return 0.96;
-  if (/翼|翅膀|wing/.test(n)) return 1.35;
-  if (/剑|刀|枪|弓|杖|武器|weapon/.test(n)) return 1.15;
-  if (/身|体|服装|汉服|素体|body/.test(n)) return 1.45;
+  const r = Number.isFinite(ratioNumeric) && ratioNumeric >= 1.5 ? ratioNumeric : 6.6;
+  const h = Number.isFinite(totalHeight) && totalHeight > 0.1 ? totalHeight : 1.65;
+  const headH = h / r;
+  const bodyH = Math.max(0.15, h - headH * 0.82);
+
+  if (/裸脸|裸头|脸|面部|head|face/.test(n) && !/发|hair/.test(n)) return Number(headH.toFixed(3));
+  if (/发|hair/.test(n)) return Number(Math.min(h * 0.82, headH * (r <= 3.5 ? 1.35 : 2.3)).toFixed(3));
+  if (/帽|冠|头饰/.test(n)) return Number((headH * 1.1).toFixed(3));
+  if (/上衣|上身|上半身|upper/.test(n)) return Number((bodyH * 0.54).toFixed(3));
+  if (/下裙|下装|下半身|skirt|lower/.test(n)) return Number((bodyH * 0.68).toFixed(3));
+  if (/翼|翅膀|wing/.test(n)) return Number((h * 0.80).toFixed(3));
+  if (/剑|刀|枪|弓|杖|武器|weapon/.test(n)) return Number((h * 0.70).toFixed(3));
+  if (/身|体|服装|汉服|素体|body/.test(n)) return Number(bodyH.toFixed(3));
   return 1.0;
+}
+
+export function resolveGraphHeadBodyRatio(graph) {
+  if (!graph) return null;
+  const gRatio = resolveNumericHeadBodyRatio(graph.headBodyRatio, graph.customHeadBodyRatio);
+  if (gRatio) return gRatio;
+  const bal = (graph.nodes || []).find(n => n.type === 'balance_views');
+  if (bal?.params?.headBodyRatio) {
+    const bRatio = resolveNumericHeadBodyRatio(bal.params.headBodyRatio, bal.params.customHeadBodyRatio);
+    if (bRatio) return bRatio;
+  }
+  for (const n of graph.nodes || []) {
+    if (n.type === 'part_views' && n.params?.headBodyRatio && n.params.headBodyRatio !== 'keep') {
+      const pRatio = resolveNumericHeadBodyRatio(n.params.headBodyRatio, n.params.customHeadBodyRatio);
+      if (pRatio) return pRatio;
+    }
+  }
+  return null;
 }
 
 export function createNode(type, x = 80, y = 80, overrides = {}) {
@@ -118,10 +176,16 @@ export function createNode(type, x = 80, y = 80, overrides = {}) {
   const id = overrides.id || uid(type);
   const base = {id, type, x: Math.round(x), y: Math.round(y), params: {}, data: {}};
 
-  if (type === 'source_image' || type === 'style_ref' || type === 'ratio_ref') {
+  if (type === 'source_image' || type === 'mask_ref' || type === 'style_ref' || type === 'ratio_ref') {
     base.params = {
       title: overrides.title || spec.defaultTitle,
-      note: overrides.note || (type === 'style_ref' ? '参考此图的赛璐璐/二次元上色质感与线条细节' : type === 'ratio_ref' ? '参考此图的头身比例与肢体修长度' : ''),
+      note: overrides.note || (
+        type === 'style_ref'
+          ? '参考此图的赛璐璐/二次元上色质感与线条细节'
+          : type === 'mask_ref'
+            ? '白色/涂色高亮区域代表要拆出的目标部件（支持多色 ID Mask 分区）'
+            : ''
+      ),
     };
     base.data = {image: null}; // { path, filename, mime, sha256, width, height }
   } else if (type === 'part_views') {
@@ -130,8 +194,14 @@ export function createNode(type, x = 80, y = 80, overrides = {}) {
       promptHint: overrides.promptHint || '',
       pose: overrides.pose || 't', // 't' | 'a' | 'natural'
       resolution: overrides.resolution === 2048 ? 2048 : 1024,
+      headBodyRatio: overrides.headBodyRatio || 'keep',
+      customHeadBodyRatio: Number.isFinite(overrides.customHeadBodyRatio) ? overrides.customHeadBodyRatio : 6.8,
+      maskMode: overrides.maskMode || 'auto', // 'auto' | 'white' | 'alpha' | 'color'
+      maskColor: overrides.maskColor || '#ff2d55',
+      maskNote: overrides.maskNote || '',
     };
     base.data = {
+      maskImage: null,
       views: {front: null, left: null, right: null, back: null},
       completedStamp: '',
     };
@@ -141,6 +211,8 @@ export function createNode(type, x = 80, y = 80, overrides = {}) {
       promptHint: overrides.promptHint || '用于最终 3D 合体时的全身比例对齐参考',
       pose: overrides.pose || 't',
       resolution: 1024,
+      headBodyRatio: overrides.headBodyRatio || 'keep',
+      customHeadBodyRatio: Number.isFinite(overrides.customHeadBodyRatio) ? overrides.customHeadBodyRatio : 6.8,
     };
     base.data = {
       views: {front: null, side: null, back: null},
@@ -203,40 +275,42 @@ export function createTemplateGraph(preset = 'standard_split') {
   };
 
   const src = createNode('source_image', 50, 90);
-  const style = createNode('style_ref', 50, 350);
-  nodes.push(src, style);
-
-  let ratio = null;
-  if (preset !== 'single_prop') {
-    ratio = createNode('ratio_ref', 50, 610);
-    nodes.push(ratio);
-  }
+  const maskNode = preset === 'mask_custom_split' ? createNode('mask_ref', 50, 350) : null;
+  const style = createNode('style_ref', 50, maskNode ? 620 : 360);
+  nodes.push(src);
+  if (maskNode) nodes.push(maskNode);
+  nodes.push(style);
 
   const assembly = createNode('assembly_export', 1170, 260, {
     materialMode: preset === 'standard_split' ? 'mtoon' : 'pbr',
-    targetHeight: preset === 'single_prop' ? 1.0 : 1.7,
+    targetHeight: preset === 'single_prop' ? 1.0 : 1.65,
   });
 
   const partDefs = preset === 'single_prop'
     ? [
         {partName: '主体物件', promptHint: '保持正交无透视四视图，上下像素高度严格对齐', pose: 'natural', quality: 'high', polyFaces: 2000000, tex: 4096},
       ]
-    : preset === 'deluxe_composite'
+    : preset === 'mask_custom_split'
       ? [
-          {partName: '无发裸脸', promptHint: '剥离全部头发与刘海遮挡，保留完整光头头骨、五官与双耳', pose: 'natural', quality: 'high', polyFaces: 1000000, tex: 4096, removeLighting: true},
-          {partName: '独立头发与发饰', promptHint: '仅保留前后完整发型与发饰，内部头模挖空不画脸部皮肤', pose: 'natural', quality: 'high', polyFaces: 3000000, tex: 8192, removeLighting: true},
-          {partName: '上衣与肩甲', promptHint: 'T姿势展开双臂，剥离头发与下裙遮挡', pose: 't', quality: 'high', polyFaces: 2000000, tex: 8192},
-          {partName: '下裙与鞋履', promptHint: '完整下装与鞋靴结构', pose: 't', quality: 'high', polyFaces: 2000000, tex: 4096},
-          {partName: '背部翅膀', promptHint: '独立拆出对称完整的翅膀结构，去除人物身体遮挡', pose: 'natural', quality: 'high', polyFaces: 2000000, tex: 4096},
-          {partName: '主武器', promptHint: '独立垂直或水平正交摆放，结构清晰对称', pose: 'natural', quality: 'smart', polyFaces: 15000, tex: 4096},
+          {partName: 'Mask拆出部件 A', promptHint: '严格仅拆出 Mask 高亮/指定颜色覆盖的独立部件，补全被遮挡背面', pose: 'natural', quality: 'high', polyFaces: 2000000, tex: 4096, removeLighting: true, wireMask: true, maskMode: 'auto'},
+          {partName: '剩余主体部件 B', promptHint: '剥离已由部件 A 拆出的外层部件，补全内层完整结构', pose: 't', quality: 'high', polyFaces: 3000000, tex: 8192, removeLighting: true},
         ]
-      : [
-          {partName: '无发裸脸', promptHint: '剥离全部头发与刘海遮挡，保留完整光头头骨、精致二次元五官与双耳', pose: 'natural', quality: 'high', polyFaces: 1000000, tex: 4096, removeLighting: true},
-          {partName: '独立头发与发饰', promptHint: '仅保留完整前后发与头饰，挖空脸部与颈部皮肤', pose: 'natural', quality: 'high', polyFaces: 3000000, tex: 4096, removeLighting: true},
-          {partName: '服装身体', promptHint: '无头T姿势完整服装与躯干四肢（含颈部柱体以便衔接头部）', pose: 't', quality: 'high', polyFaces: 3000000, tex: 8192, removeLighting: true},
-        ];
+      : preset === 'deluxe_composite'
+        ? [
+            {partName: '无发裸脸', promptHint: '剥离全部头发与刘海遮挡，保留完整光头头骨、五官与双耳', pose: 'natural', quality: 'high', polyFaces: 1000000, tex: 4096, removeLighting: true},
+            {partName: '独立头发与发饰', promptHint: '仅保留前后完整发型与发饰，内部头模挖空不画脸部皮肤', pose: 'natural', quality: 'high', polyFaces: 3000000, tex: 8192, removeLighting: true},
+            {partName: '上衣与肩甲', promptHint: 'T姿势展开双臂，剥离头发与下裙遮挡', pose: 't', quality: 'high', polyFaces: 2000000, tex: 8192},
+            {partName: '下裙与鞋履', promptHint: '完整下装与鞋靴结构', pose: 't', quality: 'high', polyFaces: 2000000, tex: 4096},
+            {partName: '背部翅膀', promptHint: '独立拆出对称完整的翅膀结构，去除人物身体遮挡', pose: 'natural', quality: 'high', polyFaces: 2000000, tex: 4096},
+            {partName: '主武器', promptHint: '独立垂直或水平正交摆放，结构清晰对称', pose: 'natural', quality: 'smart', polyFaces: 15000, tex: 4096},
+          ]
+        : [
+            {partName: '无发裸脸', promptHint: '剥离全部头发与刘海遮挡，保留完整光头头骨、精致二次元五官与双耳', pose: 'natural', quality: 'high', polyFaces: 1000000, tex: 4096, removeLighting: true},
+            {partName: '独立头发与发饰', promptHint: '仅保留完整前后发与头饰，挖空脸部与颈部皮肤', pose: 'natural', quality: 'high', polyFaces: 3000000, tex: 4096, removeLighting: true},
+            {partName: '服装身体', promptHint: '无头T姿势完整服装与躯干四肢（含颈部柱体以便衔接头部）', pose: 't', quality: 'high', polyFaces: 3000000, tex: 8192, removeLighting: true},
+          ];
 
-  const rowGap = 270;
+  const rowGap = 285;
   partDefs.forEach((def, i) => {
     const y = 60 + i * rowGap;
     const pv = createNode('part_views', 410, y, {
@@ -244,6 +318,7 @@ export function createTemplateGraph(preset = 'standard_split') {
       promptHint: def.promptHint,
       pose: def.pose,
       resolution: def.polyFaces >= 3000000 ? 2048 : 1024,
+      maskMode: def.maskMode || 'auto',
     });
     const tm = createNode('tripo_mesh', 790, y, {
       title: `Tripo · ${def.partName}`,
@@ -254,10 +329,10 @@ export function createTemplateGraph(preset = 'standard_split') {
     });
     nodes.push(pv, tm);
     connect(src.id, 'image', pv.id, 'source');
-    connect(style.id, 'style', pv.id, 'style');
-    if (ratio && def.pose !== 'natural') {
-      connect(ratio.id, 'ratio', pv.id, 'ratio');
+    if (maskNode && def.wireMask) {
+      connect(maskNode.id, 'mask', pv.id, 'mask');
     }
+    connect(style.id, 'style', pv.id, 'style');
     connect(pv.id, 'views', tm.id, 'views');
     connect(tm.id, 'mesh', assembly.id, 'meshes');
   });
@@ -268,7 +343,6 @@ export function createTemplateGraph(preset = 'standard_split') {
     nodes.push(bal);
     connect(src.id, 'image', bal.id, 'source');
     connect(style.id, 'style', bal.id, 'style');
-    if (ratio) connect(ratio.id, 'ratio', bal.id, 'ratio');
     connect(bal.id, 'guide', assembly.id, 'guide');
     assembly.y = Math.round((60 + (partDefs.length - 1) * rowGap) / 2);
   }
@@ -277,6 +351,8 @@ export function createTemplateGraph(preset = 'standard_split') {
   return {
     version: 1,
     preset,
+    headBodyRatio: 'keep',
+    customHeadBodyRatio: 6.8,
     activeWorkspace: 'canvas', // 'canvas' | 'viewport'
     viewport: {panX: 24, panY: 20, zoom: 0.86},
     nodes,
@@ -777,24 +853,31 @@ export function nodeInputStamp(graph, nodeId, visited = new Set()) {
   const node = getNode(graph, nodeId);
   if (!node) return '';
 
-  if (node.type === 'source_image' || node.type === 'style_ref' || node.type === 'ratio_ref') {
+  if (node.type === 'source_image' || node.type === 'mask_ref' || node.type === 'style_ref' || node.type === 'ratio_ref') {
     return JSON.stringify([node.type, node.data?.image?.sha256 || null, node.params?.note || '']);
   }
   if (node.type === 'part_views' || node.type === 'balance_views') {
     const srcEdge = incomingEdges(graph, nodeId, 'source')[0];
+    const maskEdge = incomingEdges(graph, nodeId, 'mask')[0];
     const styleEdge = incomingEdges(graph, nodeId, 'style')[0];
-    const ratioEdge = incomingEdges(graph, nodeId, 'ratio')[0];
+    const effRatio = node.params?.headBodyRatio && node.params.headBodyRatio !== 'keep'
+      ? [node.params.headBodyRatio, node.params.customHeadBodyRatio || 6.8]
+      : [graph.headBodyRatio || 'keep', graph.customHeadBodyRatio || 6.8];
     return JSON.stringify([
       node.type,
       node.params?.partName || '',
       node.params?.promptHint || '',
       node.params?.pose || 't',
       node.params?.resolution || 1024,
+      effRatio,
+      node.params?.maskMode || 'auto',
+      node.params?.maskColor || '',
+      node.data?.maskImage?.sha256 || null,
       node.params?.modCraftRules || null,
       graph.modMeta?.promptRules || null,
       srcEdge ? nodeInputStamp(graph, srcEdge.fromNode, new Set(visited)) : null,
+      maskEdge ? nodeInputStamp(graph, maskEdge.fromNode, new Set(visited)) : null,
       styleEdge ? nodeInputStamp(graph, styleEdge.fromNode, new Set(visited)) : null,
-      ratioEdge ? nodeInputStamp(graph, ratioEdge.fromNode, new Set(visited)) : null,
     ]);
   }
   if (node.type === 'tripo_mesh') {
@@ -855,10 +938,10 @@ export function nodeStatus(graph, nodeId) {
   const node = getNode(graph, nodeId);
   if (!node) return {state: 'empty', label: '未知'};
 
-  if (node.type === 'source_image' || node.type === 'style_ref' || node.type === 'ratio_ref') {
+  if (node.type === 'source_image' || node.type === 'mask_ref' || node.type === 'style_ref' || node.type === 'ratio_ref') {
     return node.data?.image?.sha256
-      ? {state: 'ready', label: '已载入图片'}
-      : {state: 'empty', label: node.type === 'source_image' ? '请上传主立绘' : '可选（未上传）'};
+      ? {state: 'ready', label: node.type === 'mask_ref' ? '已载入 Mask' : '已载入图片'}
+      : {state: 'empty', label: node.type === 'source_image' ? '请上传主立绘' : node.type === 'mask_ref' ? '请上传遮罩图' : '可选（未上传）'};
   }
 
   if (node.type === 'part_views' || node.type === 'balance_views') {
@@ -979,6 +1062,7 @@ export function collectReferencedGraphPaths(graph) {
   const used = new Set();
   for (const n of graph?.nodes || []) {
     if (n.data?.image?.path) used.add(n.data.image.path);
+    if (n.data?.maskImage?.path) used.add(n.data.maskImage.path);
     if (n.data?.views) {
       for (const v of Object.values(n.data.views)) {
         if (v?.path) used.add(v.path);
@@ -1026,6 +1110,7 @@ export function validateNodeGraph(p) {
     if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) throw Error('Invalid node coordinates.');
     nodeIds.add(n.id);
     if (n.data?.image && !validPath(n.data.image.path)) throw Error('Referenced node image file is missing.');
+    if (n.data?.maskImage && !validPath(n.data.maskImage.path)) throw Error('Referenced node mask image file is missing.');
     if (n.data?.views) {
       for (const v of Object.values(n.data.views)) {
         if (v && !validPath(v.path)) throw Error('Referenced node view PNG is missing.');

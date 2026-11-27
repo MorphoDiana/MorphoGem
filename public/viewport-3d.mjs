@@ -7,6 +7,7 @@ import {
   ensureNodeGraph,
   connectedAssemblyMeshes,
   connectedAssemblyGuide,
+  resolveGraphHeadBodyRatio,
   defaultPlacementForPartName,
   defaultHeightForPartName,
 } from './node-graph.mjs';
@@ -30,6 +31,7 @@ export function initViewport3D(hooks) {
   const partCountBadge = document.querySelector('#vpPartCountBadge');
   const selectedPartTitle = document.querySelector('#vpSelectedPartTitle');
   const targetHeightInput = document.querySelector('#vpTargetHeightInput');
+  const headBodyRatioInput = document.querySelector('#vpHeadBodyRatioInput');
   const matModeSelect = document.querySelector('#vpMaterialModeSelect');
 
   const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
@@ -346,6 +348,10 @@ export function initViewport3D(hooks) {
     const connected = connectedAssemblyMeshes(g);
 
     targetHeightInput.value = String((Number(project.targetHeight) || 1.60).toFixed(2));
+    const activeRatio = resolveGraphHeadBodyRatio(g);
+    if (headBodyRatioInput) {
+      headBodyRatioInput.value = String(activeRatio || 6.8);
+    }
     const asmNode = g.nodes.find(n => n.type === 'assembly_export');
     if (asmNode?.params?.materialMode) {
       matModeSelect.value = asmNode.params.materialMode;
@@ -367,9 +373,10 @@ export function initViewport3D(hooks) {
         if (myToken !== syncToken) return;
         applyWireframeState(obj);
 
+        const totalCharH = Number(project.targetHeight) || 1.60;
         project.placements ??= {};
         project.placements[item.meshNodeId] ??= {
-          position: defaultPlacementForPartName(item.partLabel, item.index),
+          position: defaultPlacementForPartName(item.partLabel, item.index, activeRatio, totalCharH),
           rotation: [0, 0, 0],
           scale: 1,
         };
@@ -525,6 +532,63 @@ export function initViewport3D(hooks) {
     hooks.changed();
     hooks.toast(tr(`✓ 已按总高 ${desiredH.toFixed(2)}m 等比校准并贴齐地面`, `✓ Calibrated assembly to ${desiredH.toFixed(2)}m & grounded`));
   };
+
+  // --- Parametric 3D Head-vs-Body Ratio Re-Calibration ---
+  const applyRatioBtn = document.querySelector('#vpApplyRatioBtn');
+  if (applyRatioBtn) {
+    applyRatioBtn.onclick = () => {
+      const desiredR = Math.max(1.5, Math.min(9.5, Number.parseFloat(headBodyRatioInput?.value || '6.8')));
+      if (!Number.isFinite(desiredR)) return;
+      if (headBodyRatioInput) headBodyRatioInput.value = String(Number(desiredR.toFixed(2)));
+      const {project} = hooks.get();
+      const g = ensureNodeGraph(project);
+      g.headBodyRatio = 'custom';
+      g.customHeadBodyRatio = Number(desiredR.toFixed(2));
+      const desiredTotalH = Math.max(0.1, Number.parseFloat(targetHeightInput?.value || String(project.targetHeight || 1.60)) || 1.60);
+      project.targetHeight = desiredTotalH;
+      project.placements ??= {};
+
+      let idx = 0;
+      for (const [meshNodeId, info] of partGroups.entries()) {
+        const baseNormH = Number(info.candidate?.normalization?.height) || defaultHeightForPartName(info.label, null, 1.7);
+        const wantPartH = defaultHeightForPartName(info.label, desiredR, desiredTotalH);
+        const prevRot = project.placements?.[meshNodeId]?.rotation || [0, 0, 0];
+        project.placements[meshNodeId] = {
+          position: defaultPlacementForPartName(info.label, idx, desiredR, desiredTotalH),
+          rotation: [...prevRot],
+          scale: Number(Math.max(0.02, wantPartH / Math.max(0.05, baseNormH)).toFixed(4)),
+        };
+        applyPlacementToScenePart(meshNodeId);
+        idx++;
+      }
+
+      // Snap combined assembly lowest point cleanly onto ground plane (Y=0)
+      const box = updateTotalHeightMetric();
+      if (box && !box.isEmpty() && Math.abs(box.min.y) > 0.002) {
+        const deltaZ = -box.min.y;
+        for (const [meshNodeId] of partGroups.entries()) {
+          if (project.placements[meshNodeId]) {
+            project.placements[meshNodeId].position[2] = Number((project.placements[meshNodeId].position[2] + deltaZ).toFixed(4));
+            applyPlacementToScenePart(meshNodeId);
+          }
+        }
+      }
+
+      syncTransformInputsFromSelected();
+      hooks.changed();
+      hooks.toast(tr(
+        `✓ 已将 3D 部件按 ${desiredR} 头身（总高 ${desiredTotalH.toFixed(2)}m）重新配比并贴地`,
+        `✓ Re-proportioned 3D parts to ${desiredR}H (total ${desiredTotalH.toFixed(2)}m) & grounded`
+      ));
+    };
+  }
+
+  window.addEventListener('morphogem-ratio-changed', ev => {
+    const r = ev.detail?.ratio;
+    if (headBodyRatioInput && r) {
+      headBodyRatioInput.value = String(r);
+    }
+  });
 
   matModeSelect.onchange = () => {
     const {project} = hooks.get();

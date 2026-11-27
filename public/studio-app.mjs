@@ -53,6 +53,8 @@ const UI_STRINGS = {
   vpExportTitle: ['📦 整体身高与合并导出', '📦 Total Height & Merge Export'],
   vpTargetHeightLabel: ['目标总身高 (m)', 'Target Total Height (m)'],
   vpApplyHeightBtn: ['校准总高与贴地', 'Fit Height & Ground'],
+  vpHeadBodyRatioLabel: ['📏 3D 头身比例 (头数 1.5~9.5)', '📏 3D Head-Body Ratio (1.5~9.5H)'],
+  vpApplyRatioBtn: ['重配头身比例', 'Apply Ratio'],
   vpMaterialModeLabel: ['Blender 导出着色器模式', 'Blender Export Shader'],
   matPbr: ['PBR 标准材质（通用推荐）', 'PBR Standard Material (Recommended)'],
   matToon: ['Anime Toon 二次元赛璐璐材质', 'Anime Cel-Toon Material'],

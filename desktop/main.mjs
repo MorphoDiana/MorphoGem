@@ -946,7 +946,7 @@ app.whenReady().then(async () => {
           renderedNodeCardsAfterAdd: afterCount,
         };
       })()`);
-      // Verify instant dropdown onchange template switching (deluxe_composite = 17 nodes, chibi mod = 9 nodes)
+      // Verify instant dropdown onchange template switching (deluxe_composite = 16 nodes, mask_custom_split = 11 nodes)
       await workbenchView.webContents.executeJavaScript(`(() => {
         const sel = document.getElementById('ngTemplateSelect');
         sel.value = 'deluxe_composite';
@@ -968,6 +968,31 @@ app.whenReady().then(async () => {
         return txt.includes('Smart UV') && txt.includes('Retexture');
       })()`);
       wbCheck.smartUvRetexRendered = smartCheck;
+      // Verify v2.2.0 Parametric Head-Body Ratio selector, Mask template, & All-at-Once 4-Up Multi-View Lightbox
+      const v22Check = await workbenchView.webContents.executeJavaScript(`(() => {
+        const ratioSel = document.getElementById('ngGlobalRatioSelect');
+        if (ratioSel) {
+          ratioSel.value = '2.5';
+          ratioSel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        const tplSel = document.getElementById('ngTemplateSelect');
+        tplSel.value = 'mask_custom_split';
+        tplSel.dispatchEvent(new Event('change', { bubbles: true }));
+        return Boolean(ratioSel && ratioSel.value === '2.5');
+      })()`);
+      await new Promise(r => setTimeout(r, 200));
+      const inspectorCheck = await workbenchView.webContents.executeJavaScript(`(() => {
+        const hasMaskNode = !!document.querySelector('#ngNodesLayer .ng-node[data-type="mask_ref"]');
+        const expandBtn = document.querySelector('#ngNodesLayer .ng-node[data-type="part_views"] .ng-btn.cyan');
+        expandBtn?.click();
+        const dlg = document.getElementById('ngImagePreviewDialog');
+        const slotCount = dlg ? dlg.querySelectorAll('#mvSheetGrid .mv-slot-card').length : 0;
+        if (dlg?.open) dlg.close();
+        return { hasMaskNode, multiViewSlotCount: slotCount };
+      })()`);
+      wbCheck.parametricRatioReady = v22Check;
+      wbCheck.hasMaskNode = inspectorCheck.hasMaskNode;
+      wbCheck.multiViewSlotCount = inspectorCheck.multiViewSlotCount;
       const sessRes = await fetch(`${workbenchSrv.url}/api/session`, { headers: { host: new URL(workbenchSrv.url).host } });
       const sessJson = await sessRes.json();
       const smokeResult = {
@@ -982,8 +1007,18 @@ app.whenReady().then(async () => {
         cleanUserAgent: !uaCheck.ua.includes('Electron') && uaCheck.ua.includes('Chrome/'),
         webdriverHidden: uaCheck.webdriver === false,
       };
-      if (!wbCheck.hasModsBtn || wbCheck.canvasVisibleHeight < 300 || !wbCheck.headerNoOverlap || wbCheck.renderedNodeCardsAfterAdd <= wbCheck.renderedNodeCardsBefore || wbCheck.deluxeTemplateNodes !== 17 || !wbCheck.smartUvRetexRendered) {
-        throw new Error('Workbench UI layout, node-creation, template-switch, or Smart UV check failed: ' + JSON.stringify(wbCheck));
+      if (
+        !wbCheck.hasModsBtn ||
+        wbCheck.canvasVisibleHeight < 300 ||
+        !wbCheck.headerNoOverlap ||
+        wbCheck.renderedNodeCardsAfterAdd <= wbCheck.renderedNodeCardsBefore ||
+        wbCheck.deluxeTemplateNodes !== 16 ||
+        !wbCheck.smartUvRetexRendered ||
+        !wbCheck.parametricRatioReady ||
+        !wbCheck.hasMaskNode ||
+        wbCheck.multiViewSlotCount !== 4
+      ) {
+        throw new Error('Workbench UI layout, node-creation, template-switch, Mask, or 4-up inspector check failed: ' + JSON.stringify(wbCheck));
       }
       console.log('DESKTOP_SMOKE_OK ' + JSON.stringify(smokeResult));
       setTimeout(() => app.quit(), 250);

@@ -20,6 +20,8 @@ import {
   getNode,
   isMeshNodeType,
   resolveUpstreamViewsNode,
+  resolveGraphHeadBodyRatio,
+  resolveNumericHeadBodyRatio,
   incomingEdges,
   nodeInputStamp,
   defaultPlacementForPartName,
@@ -33,6 +35,10 @@ import {
   generatePreviewGlbFromBuffer,
   PREVIEW_PROXY_MIN_BYTES,
 } from '../server-blender.mjs';
+import {
+  generateRatioRulerGuide,
+  generateMaskOverlayGuide,
+} from './mask-and-ratio-guides.mjs';
 
 async function measureFbxNormalization(fbxPath, targetHeight) {
   const blender = await findBlender();
@@ -108,7 +114,10 @@ export async function registerMeshCandidatesIntoNode(p, files, nodeId, specs, {r
 
   const pvNode = resolveUpstreamViewsNode(g, node.id);
   const partName = pvNode?.params?.partName || node.params?.title || 'Part';
-  const targetH = defaultHeightForPartName(partName);
+  const ratioNum = resolveNumericHeadBodyRatio(pvNode?.params?.headBodyRatio, pvNode?.params?.customHeadBodyRatio)
+    || resolveGraphHeadBodyRatio(g);
+  const totalCharHeight = Number(p.targetHeight) || 1.7;
+  const targetH = defaultHeightForPartName(partName, ratioNum, totalCharHeight);
 
   if (replace) node.data.candidates = [];
 
@@ -147,7 +156,7 @@ export async function registerMeshCandidatesIntoNode(p, files, nodeId, specs, {r
     node.data.completedStamp = nodeInputStamp(g, node.id);
     p.placements ??= {};
     p.placements[node.id] ??= {
-      position: defaultPlacementForPartName(partName),
+      position: defaultPlacementForPartName(partName, 0, ratioNum, totalCharHeight),
       rotation: [0, 0, 0],
       scale: 1,
     };
@@ -165,13 +174,15 @@ async function main() {
     await fs.mkdir(outDir, {recursive: true});
 
     const exported = [];
+    const savedByNodeId = new Map();
     for (const n of g.nodes) {
-      if (['source_image', 'style_ref', 'ratio_ref'].includes(n.type) && n.data?.image?.path) {
+      if (['source_image', 'mask_ref', 'style_ref', 'ratio_ref'].includes(n.type) && n.data?.image?.path) {
         const bytes = files.get(n.data.image.path);
         if (!bytes) continue;
         const ext = path.extname(n.data.image.path) || '.png';
         const outFile = path.join(outDir, `${n.id}${ext}`);
         await fs.writeFile(outFile, bytes);
+        savedByNodeId.set(n.id, outFile);
         exported.push({
           nodeId: n.id,
           type: n.type,
@@ -180,8 +191,77 @@ async function main() {
           savedPath: outFile,
         });
       }
+      if (n.type === 'part_views' && n.data?.maskImage?.path) {
+        const bytes = files.get(n.data.maskImage.path);
+        if (bytes) {
+          const ext = path.extname(n.data.maskImage.path) || '.png';
+          const outMaskFile = path.join(outDir, `${n.id}_mask${ext}`);
+          await fs.writeFile(outMaskFile, bytes);
+          savedByNodeId.set(`${n.id}:inline_mask`, outMaskFile);
+          exported.push({
+            nodeId: n.id,
+            type: 'inline_part_mask',
+            partName: n.params?.partName || '',
+            filename: n.data.maskImage.filename,
+            savedPath: outMaskFile,
+          });
+        }
+      }
     }
-    console.log(JSON.stringify({projectId: p.id, projectName: p.name, inputs: exported}, null, 2));
+
+    // Generate Mask Highlight Overlays (`<partNodeId>_mask_overlay.png`) for all masked part_views nodes
+    const maskGuides = [];
+    for (const n of g.nodes) {
+      if (n.type !== 'part_views') continue;
+      const inEdges = incomingEdges(g, n.id);
+      const srcEdge = inEdges.find(e => e.toPort === 'source');
+      const mskEdge = inEdges.find(e => e.toPort === 'mask');
+      const srcPath = srcEdge ? savedByNodeId.get(srcEdge.fromNode) : null;
+      const mskPath = mskEdge
+        ? savedByNodeId.get(mskEdge.fromNode)
+        : savedByNodeId.get(`${n.id}:inline_mask`);
+      if (srcPath && mskPath) {
+        const overlayPath = path.join(outDir, `${n.id}_mask_overlay.png`);
+        const built = await generateMaskOverlayGuide({
+          sourcePath: srcPath,
+          maskPath: mskPath,
+          mode: n.params?.maskMode || 'auto',
+          colorHex: n.params?.maskColor || '#ff3b30',
+          outPath: overlayPath,
+        });
+        maskGuides.push({
+          nodeId: n.id,
+          partName: n.params?.partName || '',
+          maskMode: n.params?.maskMode || 'auto',
+          maskColor: n.params?.maskColor || '#ff3b30',
+          maskPath: mskPath,
+          overlayPath: built || null,
+        });
+      }
+    }
+
+    // Generate Orthographic Head-Body Proportion Ruler PNG when parametric ratio is enabled
+    const globalRatio = resolveGraphHeadBodyRatio(g);
+    let proportionRulerPath = null;
+    if (globalRatio) {
+      const primaryPose = g.nodes.find(x => x.type === 'balance_views' || x.type === 'part_views')?.params?.pose || 't';
+      const rulerOut = path.join(outDir, `proportion_ruler_${globalRatio}H.png`);
+      proportionRulerPath = await generateRatioRulerGuide({
+        ratio: globalRatio,
+        size: 1024,
+        pose: primaryPose,
+        outPath: rulerOut,
+      });
+    }
+
+    console.log(JSON.stringify({
+      projectId: p.id,
+      projectName: p.name,
+      headBodyRatio: globalRatio,
+      proportionRulerPath,
+      maskGuides,
+      inputs: exported,
+    }, null, 2));
     return;
   }
 

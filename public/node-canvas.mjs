@@ -2,6 +2,8 @@ import {
   NODE_SPECS,
   GRAPH_VIEWS_4,
   GRAPH_VIEWS_3,
+  HEAD_BODY_RATIO_PRESETS,
+  resolveNumericHeadBodyRatio,
   BUILTIN_BRANCH_PRESETS,
   ensureNodeGraph,
   createNode,
@@ -33,6 +35,7 @@ import {tr, onLocaleChange} from './i18n.mjs';
 
 const KIND_COLORS = {
   image: '#38bdf8',
+  mask: '#f43f5e',
   style: '#c084fc',
   ratio: '#2dd4bf',
   views: '#fbbf24',
@@ -42,6 +45,7 @@ const KIND_COLORS = {
 
 const KIND_LABELS = {
   image: '主设计图',
+  mask: 'Mask 遮罩',
   style: '画风参考',
   ratio: '头身比参考',
   views: '四方向视图',
@@ -50,6 +54,13 @@ const KIND_LABELS = {
 };
 
 const VIEW_LABELS = {front: '正', left: '左', right: '右', back: '背', side: '右'};
+const VIEW_FULL_LABELS = {
+  front: ['正面 Front (0°)', 'Front (0°)'],
+  left: ['左侧面 Left (<--)', 'Left Profile (<--)'],
+  right: ['右侧面 Right (-->)', 'Right Profile (-->)'],
+  side: ['右侧面 Side (-->)', 'Right Profile (-->)'],
+  back: ['背面 Back (180°)', 'Back (180°)'],
+};
 const DEFAULT_PROJ_NAMES = DEFAULT_PROJECT_NAMES;
 const LOCAL_PRESET_KEY = 'morphogem.nodePresets.v1';
 
@@ -112,8 +123,11 @@ export function initNodeCanvas(hooks) {
     <div class="ng-toolbar">
       <div class="ng-toolbar-group">
         <select id="ngTemplateSelect" class="ng-select" title="选择内置或自定义保存的整图模板"></select>
-        <button type="button" id="ngApplyTemplate" class="ng-btn" title="套用左侧选中的模板（保留已上传的主立绘与参考图）">套用</button>
+        <button type="button" id="ngApplyTemplate" class="ng-btn" title="重置套用左侧选中的模板（保留已上传的主立绘与参考图）">↻ 重置</button>
         <button type="button" id="ngSaveTemplate" class="ng-btn violet" title="将当前画布的完整节点布局与参数保存为自定义模板">💾 存为模板</button>
+        <span class="ng-sep"></span>
+        <select id="ngGlobalRatioSelect" class="ng-select" title="精确头身比强约束（自动生成正交分格标尺图并联动 3D 头身缩放）" style="max-width:176px"></select>
+        <input type="number" id="ngGlobalRatioCustom" class="ng-input" min="1.5" max="9.5" step="0.1" value="6.8" style="width:62px;height:30px;padding:2px 6px" title="自定义头身比数值 (1.5 ~ 9.5)" hidden>
         <span class="ng-sep"></span>
         <button type="button" id="ngQuickAddBtn" class="ng-btn amber" title="搜索并添加节点或自定义分支 (快捷键 Space / Shift+A)">+ 添加节点 <span class="ng-kbd">Space</span></button>
         <button type="button" id="ngSaveBranch" class="ng-btn violet" title="将当前选中的节点（或拆图+建模组合）保存为可复用的分支预设">🌿 存分支</button>
@@ -172,22 +186,58 @@ export function initNodeCanvas(hooks) {
   const appContent = document.querySelector('.app-content') || document.body;
   appContent.prepend(root);
 
-  // Lightbox dialog for inspecting view images on nodes
+  // Multi-View Side-by-Side Comparison Lightbox (expands ALL views of a node at once!)
   const previewDlg = document.createElement('dialog');
   previewDlg.id = 'ngImagePreviewDialog';
   previewDlg.innerHTML = `
-    <div class="dialog-top"><h2 id="ngPreviewTitle">视图预览</h2><button type="button" id="ngClosePreview">×</button></div>
-    <div style="display:flex;justify-content:center;align-items:center;max-height:72vh;overflow:auto;background:#090e1a;border-radius:8px;padding:8px">
-      <img id="ngPreviewImg" alt="" style="max-width:680px;max-height:68vh;object-fit:contain">
+    <div class="dialog-top">
+      <h2 id="ngPreviewTitle">多视图同屏对比检视</h2>
+      <button type="button" id="ngClosePreview">×</button>
     </div>
-    <div class="dialog-actions" style="margin-top:10px">
-      <label class="file-button">手动替换此图<input type="file" id="ngReplaceViewInput" accept=".png,.jpg,.jpeg,.webp" hidden></label>
-      <button type="button" id="ngClosePreviewBtn" class="primary">关闭</button>
+    <div class="mv-inspector-toolbar">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#e0f2fe;font-weight:600;cursor:pointer">
+          <input type="checkbox" id="mvShowLaserChk" checked>
+          <span id="mvShowLaserLabel">📏 显示像素上下对齐激光参考线</span>
+        </label>
+        <span id="mvAlignSummary" style="font-size:11.5px;color:#94a3b8"></span>
+      </div>
+      <div class="mv-bg-pills">
+        <span id="mvBgLabel" style="font-size:11.5px;color:#94a3b8;margin-right:4px">检视底色:</span>
+        <button type="button" class="ng-pill active" data-mv-bg="checker">🏁 棋盘格</button>
+        <button type="button" class="ng-pill" data-mv-bg="black">⬛ 纯黑</button>
+        <button type="button" class="ng-pill" data-mv-bg="white">⬜ 纯白</button>
+        <button type="button" class="ng-pill" data-mv-bg="magenta" title="品红底色可一秒暴露漏抠的纯白内孔或白边">🟪 品红检白边</button>
+      </div>
+    </div>
+    <div class="mv-sheet-grid" id="mvSheetGrid" data-bg="checker"></div>
+    <input type="file" id="ngReplaceViewInput" accept=".png,.jpg,.jpeg,.webp" hidden>
+    <div class="dialog-actions" style="margin-top:12px;justify-content:space-between;flex-wrap:wrap">
+      <span id="mvFooterTip" style="font-size:11.5px;color:#94a3b8">提示：可直接将本地图片拖拽到任意视角槽位上进行替换</span>
+      <button type="button" id="ngClosePreviewBtn" class="ng-btn primary">关闭检视窗</button>
     </div>
   `;
   document.body.append(previewDlg);
   previewDlg.querySelector('#ngClosePreview').onclick = () => previewDlg.close();
   previewDlg.querySelector('#ngClosePreviewBtn').onclick = () => previewDlg.close();
+
+  // Mask Color Eyedropper Modal (for multi-color ID Mask region selection)
+  const maskPickerDlg = document.createElement('dialog');
+  maskPickerDlg.id = 'ngMaskPickerDialog';
+  maskPickerDlg.className = 'ng-modal';
+  maskPickerDlg.style.maxWidth = '680px';
+  maskPickerDlg.innerHTML = `
+    <div class="dialog-top">
+      <h2 id="ngMaskPickerTitle">💧 点击 Mask 图片吸取目标部件颜色</h2>
+      <button type="button" id="ngMaskPickerClose">×</button>
+    </div>
+    <p style="font-size:12px;color:#94a3b8;margin:8px 0">在下方多色 ID Mask 图上直接点击你要拆出的部件颜色区域：</p>
+    <div style="display:flex;justify-content:center;align-items:center;background:#090d16;border:1px solid #28354d;border-radius:8px;padding:8px;max-height:66vh;overflow:auto">
+      <canvas id="ngMaskPickerCanvas" style="max-width:100%;max-height:60vh;cursor:crosshair"></canvas>
+    </div>
+  `;
+  document.body.append(maskPickerDlg);
+  maskPickerDlg.querySelector('#ngMaskPickerClose').onclick = () => maskPickerDlg.close();
 
   // Save Template / Save Branch Dialog
   const savePresetDlg = document.createElement('dialog');
@@ -459,6 +509,7 @@ export function initNodeCanvas(hooks) {
     const builtins = [
       ['standard_split', tr('模板：精细角色拆分（裸脸 + 头发 + 服装身体）', 'Template: Standard Character Split (Face + Hair + Body)')],
       ['deluxe_composite', tr('模板：豪华多件复合（裸脸 + 发 + 上衣 + 下裙 + 翅膀 + 武器）', 'Template: Deluxe 6-Part Composite (Face + Hair + Outfit + Wings + Weapon)')],
+      ['mask_custom_split', tr('模板：Mask 遮罩精准拆件（主立绘 + Mask 遮罩拆分）', 'Template: Mask-Guided Part Extraction (Concept + Mask)')],
       ['single_prop', tr('模板：自由单件 / 道具', 'Template: Standalone Prop / Weapon')],
     ];
     for (const [val, text] of builtins) {
@@ -520,10 +571,31 @@ export function initNodeCanvas(hooks) {
     }
   }
 
+  function refreshGlobalRatioSelect() {
+    const sel = $('#ngGlobalRatioSelect');
+    const numInp = $('#ngGlobalRatioCustom');
+    if (!sel || !numInp) return;
+    const g = currentGraph();
+    const curVal = g.headBodyRatio || 'keep';
+    sel.replaceChildren();
+    for (const preset of HEAD_BODY_RATIO_PRESETS) {
+      const opt = document.createElement('option');
+      opt.value = preset.id;
+      opt.textContent = tr(preset.zh, preset.en);
+      sel.append(opt);
+    }
+    const exists = HEAD_BODY_RATIO_PRESETS.some(p => p.id === curVal);
+    sel.value = exists ? curVal : 'keep';
+    numInp.hidden = sel.value !== 'custom';
+    numInp.value = String(g.customHeadBodyRatio ?? 6.8);
+  }
+
   // --- Undo / Redo Snapshot Stack ---
   function snapshotState(g) {
     return JSON.stringify({
       preset: g.preset || 'standard_split',
+      headBodyRatio: g.headBodyRatio || 'keep',
+      customHeadBodyRatio: g.customHeadBodyRatio ?? 6.8,
       modMeta: g.modMeta || null,
       nodes: g.nodes,
       edges: g.edges,
@@ -564,6 +636,8 @@ export function initNodeCanvas(hooks) {
       if (curNode) preservedData.set(lid, structuredClone(curNode.data));
     }
     g.preset = parsed.preset || g.preset;
+    g.headBodyRatio = parsed.headBodyRatio || 'keep';
+    g.customHeadBodyRatio = parsed.customHeadBodyRatio ?? 6.8;
     g.nodes = parsed.nodes;
     g.edges = parsed.edges;
     for (const [lid, data] of preservedData) {
@@ -868,11 +942,11 @@ export function initNodeCanvas(hooks) {
     const items = [];
 
     const acceptsOutKind = (branchDef, kind) => {
-      if (kind === 'image' || kind === 'style' || kind === 'ratio') {
-        return branchDef.nodes.some(n => n.type === 'part_views' || n.type === 'balance_views');
+      if (kind === 'image' || kind === 'mask' || kind === 'style' || kind === 'ratio') {
+        return branchDef.nodes.some(n => n.type === 'part_views' || (kind !== 'mask' && n.type === 'balance_views'));
       }
       if (kind === 'views') {
-        return branchDef.nodes.some(n => n.type === 'tripo_mesh');
+        return branchDef.nodes.some(n => isMeshNodeType(n.type));
       }
       return false;
     };
@@ -996,12 +1070,12 @@ export function initNodeCanvas(hooks) {
 
     // 3. Individual Atomic Nodes
     const nodeEntries = [
-      ['part_views', '✂️ 部件正交四视图拆图', '自由命名要拆出的部件（脸/发/衣/翼/武器），生成正左右背四视图', 'part views split 拆图 部件 四视图'],
+      ['part_views', '✂️ 部件正交四视图拆图', '自由命名要拆出的部件（支持接入 Mask 遮罩精准指定边界），生成正左右背四视图', 'part views split mask 拆图 部件 四视图 遮罩'],
+      ['mask_ref', '🎭 Mask 分区遮罩图', '上传黑白遮罩、半透明涂鸦或多色 ID Mask，连入一个或多个拆图节点精准拆件', 'mask id segmentation 遮罩 蒙版 抠图 分区'],
       ['tripo_mesh', '🧊 Tripo 3D 建模节点', '接收四方向视图，配置 HD 百万面或 Smart 智能拓扑（含自动重展UV上色）', 'tripo mesh 3d model 建模 网格 高模 低模 smart'],
       ['tripo_retexture', '🎨 UV 重展开与贴图上色', '对上游 3D 白模/原模执行独立 Smart UV 重展开与多视图 4K/8K 上色（支持多皮肤换色）', 'uv unwrap smart uv retexture texture 重展开 上色 贴图 换色'],
       ['style_ref', '🎨 画风参考立绘', '提供赛璐璐/厚涂/二次元渲染画风与线条参考', 'style ref 画风 上色 参考'],
-      ['ratio_ref', '📏 头身比参考图', '提供全身头身比例与肢体修长度参考', 'ratio proportion 头身比 比例 参考'],
-      ['balance_views', '📐 全身合体比例三视图', '生成正/侧/背全身比例标尺，辅助 3D 视口合体对位', 'balance guide three views 三视图 比例尺'],
+      ['balance_views', '📐 全身合体比例三视图', '生成正/侧/背全身比例标尺，配合参数化头身比校准 3D 合体', 'balance guide three views 三视图 比例尺 头身比'],
       ['source_image', '🖼️ 主立绘（目标原画）', '输入核心角色或物件的目标原画立绘', 'source main image 主立绘 原画 输入'],
       ['assembly_export', '🧩 3D 合体对位与最终导出', '汇聚多部件 3D 网格并在 Blender 中合并导出 FBX / GLB / Blend', 'assembly export merge 合体 导出 终点'],
     ];
@@ -1034,6 +1108,10 @@ export function initNodeCanvas(hooks) {
             }
           } else {
             applyPendingWireToCreated([n], wireFrom);
+            if ((type === 'part_views' || type === 'balance_views') && wireFrom.dir === 'out' && wireFrom.kind !== 'image') {
+              const src = g.nodes.find(x => x.type === 'source_image');
+              if (src) try { connectPorts(g, src.id, 'image', n.id, 'source'); } catch {}
+            }
             // If inserting `tripo_retexture` downstream of a `tripo_mesh`, splice it cleanly into `assembly_export`
             if (type === 'tripo_retexture' && wireFrom.dir === 'out' && wireFrom.kind === 'mesh') {
               const asmEdge = g.edges.find(
@@ -1457,10 +1535,13 @@ export function initNodeCanvas(hooks) {
     const node = getNode(g, nodeId);
     if (!node) return;
 
-    const doc = await registerGraphDocument(p, f, file.name, raw, node.type);
+    const doc = await registerGraphDocument(p, f, file.name, raw, viewKey === '__mask__' ? 'mask_ref' : node.type);
     const imgMeta = {...doc, mime: info.mime, width: info.width, height: info.height};
 
-    if (viewKey && node.data?.views) {
+    if (viewKey === '__mask__') {
+      node.data ??= {};
+      node.data.maskImage = imgMeta;
+    } else if (viewKey && node.data?.views) {
       node.data.views[viewKey] = imgMeta;
     } else {
       node.data.image = imgMeta;
@@ -1475,13 +1556,320 @@ export function initNodeCanvas(hooks) {
     validateProject(p);
     await hooks.commit(p, f);
     render();
+    if (previewDlg.open && previewDlg.dataset.nodeId === nodeId && viewKey && viewKey !== '__mask__') {
+      openMultiViewInspector(nodeId, viewKey);
+    }
+  }
+
+  // --- Pixel Alpha Alignment Scanner & Multi-View Side-by-Side Comparison Lightbox ---
+  async function scanViewAlphaBounds(imgUrl) {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const nw = img.naturalWidth || 1024;
+          const nh = img.naturalHeight || 1024;
+          const scale = nh > 1024 ? 1024 / nh : 1;
+          const cw = Math.max(1, Math.round(nw * scale));
+          const ch = Math.max(1, Math.round(nh * scale));
+          const cvs = document.createElement('canvas');
+          cvs.width = cw;
+          cvs.height = ch;
+          const ctx = cvs.getContext('2d', {willReadFrequently: true});
+          ctx.drawImage(img, 0, 0, cw, ch);
+          const data = ctx.getImageData(0, 0, cw, ch).data;
+          // Check whether image actually uses alpha transparency; if opaque (JPG/white-bg), detect non-white subject
+          let transparentCount = 0;
+          for (let i = 3; i < data.length; i += 64) {
+            if (data[i] < 245) transparentCount++;
+          }
+          const hasAlpha = transparentCount > 8;
+          let topRow = -1;
+          let botRow = -1;
+          for (let y = 0; y < ch; y++) {
+            const rowOff = y * cw * 4;
+            let hit = false;
+            for (let x = 0; x < cw; x++) {
+              const idx = rowOff + x * 4;
+              const a = data[idx + 3];
+              if (hasAlpha ? a >= 20 : (a >= 20 && (data[idx] < 246 || data[idx + 1] < 246 || data[idx + 2] < 246))) {
+                hit = true;
+                break;
+              }
+            }
+            if (hit) {
+              if (topRow < 0) topRow = y;
+              botRow = y;
+            }
+          }
+          if (topRow < 0) {
+            resolve(null);
+            return;
+          }
+          resolve({
+            width: nw,
+            height: nh,
+            topPx: Math.round(topRow / scale),
+            botPx: Math.round(botRow / scale),
+            topPct: (topRow / ch) * 100,
+            botPct: ((botRow + 1) / ch) * 100,
+            midPct: (((topRow + botRow + 1) * 0.5) / ch) * 100,
+          });
+        } catch {
+          resolve(null);
+        }
+      };
+      img.onerror = () => resolve(null);
+      img.src = imgUrl;
+    });
+  }
+
+  function syncInspectorLaserVisibility() {
+    const show = Boolean(previewDlg.querySelector('#mvShowLaserChk')?.checked);
+    for (const ln of previewDlg.querySelectorAll('.mv-laser-line')) {
+      ln.style.display = show ? '' : 'none';
+    }
+  }
+
+  previewDlg.querySelector('#mvShowLaserChk').onchange = () => syncInspectorLaserVisibility();
+  for (const bgBtn of previewDlg.querySelectorAll('[data-mv-bg]')) {
+    bgBtn.onclick = () => {
+      const bg = bgBtn.dataset.mvBg || 'checker';
+      previewDlg.querySelector('#mvSheetGrid').dataset.bg = bg;
+      for (const b of previewDlg.querySelectorAll('[data-mv-bg]')) {
+        b.classList.toggle('active', b === bgBtn);
+      }
+    };
+  }
+
+  function openMultiViewInspector(nodeId, highlightKey = null) {
+    const g = currentGraph();
+    const node = getNode(g, nodeId);
+    if (!node) return;
+    const keys = node.type === 'balance_views' ? GRAPH_VIEWS_3 : GRAPH_VIEWS_4;
+    const locked = isNodeLocked(nodeId);
+    const partLabel = node.type === 'balance_views'
+      ? tr('全身合体比例三视图', 'Full-Body Proportion 3-View Sheet')
+      : (node.params?.partName || tr('部件四视图', 'Part 4-View Sheet'));
+
+    previewDlg.dataset.nodeId = nodeId;
+    previewDlg.querySelector('#ngPreviewTitle').textContent = tr(
+      `🔍 多视图同屏展开对比 · ${partLabel}`,
+      `🔍 Side-by-Side Multi-View Inspector · ${partLabel}`
+    );
+    previewDlg.querySelector('#mvShowLaserLabel').textContent = tr(
+      '📏 显示像素上下对齐激光参考线',
+      '📏 Show Top/Bottom Pixel Alignment Laser Lines'
+    );
+    previewDlg.querySelector('#mvBgLabel').textContent = tr('检视底色:', 'Backdrop:');
+    previewDlg.querySelector('#mvFooterTip').textContent = tr(
+      '提示：全部视图已同屏并排展开；可直接将本地图片拖拽到任意视角槽位上进行替换',
+      'Tip: All views are expanded side-by-side; drag & drop an image onto any slot to replace it'
+    );
+    previewDlg.querySelector('#ngClosePreviewBtn').textContent = tr('关闭检视窗', 'Close Inspector');
+
+    const gridEl = previewDlg.querySelector('#mvSheetGrid');
+    gridEl.classList.toggle('cols-3', keys.length === 3);
+    gridEl.replaceChildren();
+
+    const summaryEl = previewDlg.querySelector('#mvAlignSummary');
+    summaryEl.textContent = tr('正在扫描各视角上下像素边界…', 'Scanning pixel alignment bounds…');
+
+    const urlByKey = new Map();
+    const cardByKey = new Map();
+
+    for (const k of keys) {
+      const doc = node.data?.views?.[k];
+      const u = fileUrl(doc);
+      if (u) urlByKey.set(k, u);
+
+      const card = document.createElement('div');
+      card.className = 'mv-slot-card';
+      card.dataset.viewSlot = k;
+      if (highlightKey === k) {
+        card.style.borderColor = '#60a5fa';
+        card.style.boxShadow = '0 0 0 1px rgba(96, 165, 250, 0.45)';
+      }
+
+      const head = document.createElement('div');
+      head.className = 'mv-slot-head';
+      const fullLbl = VIEW_FULL_LABELS[k] ? tr(VIEW_FULL_LABELS[k][0], VIEW_FULL_LABELS[k][1]) : k;
+      const titleSpan = document.createElement('span');
+      titleSpan.textContent = fullLbl;
+      const alignBadge = document.createElement('span');
+      alignBadge.className = 'mv-align-tag';
+      alignBadge.hidden = true;
+      head.append(titleSpan, alignBadge);
+
+      const frame = document.createElement('div');
+      frame.className = 'mv-img-frame';
+      if (u) {
+        const img = document.createElement('img');
+        img.src = u;
+        img.alt = k;
+        const lnTop = document.createElement('div');
+        lnTop.className = 'mv-laser-line top';
+        lnTop.hidden = true;
+        const lnMid = document.createElement('div');
+        lnMid.className = 'mv-laser-line mid';
+        lnMid.hidden = true;
+        const lnBot = document.createElement('div');
+        lnBot.className = 'mv-laser-line bot';
+        lnBot.hidden = true;
+        frame.append(img, lnTop, lnMid, lnBot);
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'mv-empty-hint';
+        empty.textContent = tr('尚未填入此视角\n点击下方「替换」或直接拖入图片', 'Empty view slot\nClick Replace or drop image here');
+        empty.style.whiteSpace = 'pre-line';
+        frame.append(empty);
+      }
+
+      const foot = document.createElement('div');
+      foot.className = 'mv-slot-foot';
+      const dimSpan = document.createElement('span');
+      dimSpan.textContent = doc?.width ? `${doc.width}×${doc.height} px` : tr('未上传', 'Empty');
+      const btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:6px';
+
+      if (!locked) {
+        const repBtn = document.createElement('button');
+        repBtn.type = 'button';
+        repBtn.className = 'ng-btn';
+        repBtn.style.cssText = 'height:24px;padding:0 8px;font-size:11px';
+        repBtn.textContent = u ? tr('📂 替换', '📂 Replace') : tr('📂 上传', '📂 Upload');
+        repBtn.onclick = () => {
+          pendingUploadTarget = {nodeId, viewKey: k};
+          previewDlg.querySelector('#ngReplaceViewInput').click();
+        };
+        btnRow.append(repBtn);
+      }
+      if (doc?.path) {
+        const dlBtn = document.createElement('button');
+        dlBtn.type = 'button';
+        dlBtn.className = 'ng-btn';
+        dlBtn.style.cssText = 'height:24px;padding:0 8px;font-size:11px';
+        dlBtn.textContent = tr('⬇ 导出', '⬇ Save');
+        dlBtn.onclick = () => {
+          const bytes = hooks.get().files.get(doc.path);
+          if (!bytes) return;
+          const ext = /\.webp$/i.test(doc.path) ? 'webp' : /\.jpe?g$/i.test(doc.path) ? 'jpg' : 'png';
+          const safePart = (node.params?.partName || node.id).replace(/[\\/:*?"<>|\s]+/g, '_');
+          hooks.download?.(new Blob([bytes], {type: doc.mime || 'image/png'}), `${safePart}_${k}.${ext}`);
+        };
+        btnRow.append(dlBtn);
+      }
+
+      foot.append(dimSpan, btnRow);
+      card.append(head, frame, foot);
+
+      if (!locked) {
+        card.ondragover = ev => { ev.preventDefault(); card.style.borderColor = '#38bdf8'; };
+        card.ondragleave = () => { card.style.borderColor = highlightKey === k ? '#60a5fa' : ''; };
+        card.ondrop = ev => {
+          ev.preventDefault();
+          card.style.borderColor = highlightKey === k ? '#60a5fa' : '';
+          const file = ev.dataTransfer?.files?.[0];
+          if (file) void handleImageUpload(file, nodeId, k);
+        };
+      }
+
+      gridEl.append(card);
+      cardByKey.set(k, {card, alignBadge, frame});
+    }
+
+    if (!previewDlg.open) previewDlg.showModal();
+
+    // Run async pixel-bounds scan across all loaded views
+    const token = String(Date.now()) + Math.random();
+    previewDlg.dataset.scanToken = token;
+    void (async () => {
+      const boundsMap = new Map();
+      for (const [k, u] of urlByKey) {
+        const b = await scanViewAlphaBounds(u);
+        if (b) boundsMap.set(k, b);
+      }
+      if (previewDlg.dataset.scanToken !== token) return;
+      const refKey = boundsMap.has('front') ? 'front' : [...boundsMap.keys()][0];
+      const refB = refKey ? boundsMap.get(refKey) : null;
+      if (!refB) {
+        summaryEl.textContent = tr('上传视图后自动检测头顶与脚底像素水平对齐度', 'Upload views to inspect top/bottom pixel alignment');
+        return;
+      }
+      let maxDiffPx = 0;
+      for (const [k, {alignBadge, frame}] of cardByKey) {
+        const lnTop = frame.querySelector('.mv-laser-line.top');
+        const lnMid = frame.querySelector('.mv-laser-line.mid');
+        const lnBot = frame.querySelector('.mv-laser-line.bot');
+        if (lnTop && lnMid && lnBot) {
+          lnTop.style.top = `${refB.topPct.toFixed(2)}%`;
+          lnMid.style.top = `${refB.midPct.toFixed(2)}%`;
+          lnBot.style.top = `${refB.botPct.toFixed(2)}%`;
+          lnTop.hidden = false;
+          lnMid.hidden = false;
+          lnBot.hidden = false;
+        }
+        const curB = boundsMap.get(k);
+        if (!curB) continue;
+        if (k === refKey) {
+          alignBadge.hidden = false;
+          alignBadge.className = 'mv-align-tag ok';
+          alignBadge.textContent = tr(`基准 Y:${curB.topPx}~${curB.botPx}`, `Ref Y:${curB.topPx}~${curB.botPx}`);
+        } else {
+          const dTop = Math.abs(curB.topPx - refB.topPx);
+          const dBot = Math.abs(curB.botPx - refB.botPx);
+          const worst = Math.max(dTop, dBot);
+          if (worst > maxDiffPx) maxDiffPx = worst;
+          alignBadge.hidden = false;
+          if (worst <= 4) {
+            alignBadge.className = 'mv-align-tag ok';
+            alignBadge.textContent = tr(`✓ 对齐 (Δ${worst}px)`, `✓ Aligned (Δ${worst}px)`);
+          } else {
+            alignBadge.className = 'mv-align-tag warn';
+            alignBadge.textContent = tr(`⚠ Δ顶${dTop}/底${dBot}px`, `⚠ ΔT${dTop}/B${dBot}px`);
+          }
+        }
+      }
+      syncInspectorLaserVisibility();
+      summaryEl.textContent = maxDiffPx <= 4
+        ? tr(`✓ 已加载 ${boundsMap.size}/${keys.length} 视角 · 上下轮廓线已严格对齐 (最大误差 ${maxDiffPx}px)`, `✓ ${boundsMap.size}/${keys.length} views · Pixel aligned (max Δ${maxDiffPx}px)`)
+        : tr(`⚠ 检测到部分视角上下高度存在 ${maxDiffPx}px 偏差（导入时 align_views.py 可自动等比对齐）`, `⚠ Max height delta ${maxDiffPx}px across views`);
+    })();
+  }
+
+  // --- Mask Color Eyedropper Modal ---
+  function openMaskColorPicker(maskUrl, onPick) {
+    if (!maskUrl) {
+      hooks.toast(tr('请先上传或连入 Mask 遮罩图后再吸取颜色', 'Upload or connect a Mask image first'));
+      return;
+    }
+    const cvs = maskPickerDlg.querySelector('#ngMaskPickerCanvas');
+    const img = new Image();
+    img.onload = () => {
+      cvs.width = img.naturalWidth || 512;
+      cvs.height = img.naturalHeight || 512;
+      const ctx = cvs.getContext('2d', {willReadFrequently: true});
+      ctx.clearRect(0, 0, cvs.width, cvs.height);
+      ctx.drawImage(img, 0, 0);
+      cvs.onclick = ev => {
+        const rect = cvs.getBoundingClientRect();
+        const px = Math.max(0, Math.min(cvs.width - 1, Math.floor(((ev.clientX - rect.left) / Math.max(1, rect.width)) * cvs.width)));
+        const py = Math.max(0, Math.min(cvs.height - 1, Math.floor(((ev.clientY - rect.top) / Math.max(1, rect.height)) * cvs.height)));
+        const [r, g2, b] = ctx.getImageData(px, py, 1, 1).data;
+        const hex = '#' + [r, g2, b].map(v => v.toString(16).padStart(2, '0')).join('');
+        onPick(hex);
+        maskPickerDlg.close();
+      };
+      maskPickerDlg.showModal();
+    };
+    img.src = maskUrl;
   }
 
   function buildNodeBody(g, node) {
     const body = document.createElement('div');
     body.className = 'ng-body';
 
-    if (node.type === 'source_image' || node.type === 'style_ref' || node.type === 'ratio_ref') {
+    if (node.type === 'source_image' || node.type === 'mask_ref' || node.type === 'style_ref' || node.type === 'ratio_ref') {
       const drop = document.createElement('div');
       drop.className = 'ng-img-drop';
       const u = fileUrl(node.data?.image);
@@ -1495,16 +1883,18 @@ export function initNodeCanvas(hooks) {
         hint.className = 'ng-drop-hint';
         hint.textContent = node.type === 'source_image'
           ? '点击或拖入主角色 / 物件原画'
-          : node.type === 'style_ref'
-            ? '点击或拖入画风参考图（不连则用原画画风）'
-            : '点击或拖入头身比参考图（不连则默认比例）';
+          : node.type === 'mask_ref'
+            ? '点击或拖入 Mask 分区遮罩图（支持黑白遮罩 / 涂鸦 / 多色 ID 图）'
+            : node.type === 'style_ref'
+              ? '点击或拖入画风参考图（不连则用原画画风）'
+              : '点击或拖入头身比参考图（旧版兼容，推荐使用顶部参数化头身比）';
         drop.append(hint);
       }
       drop.onclick = () => {
         pendingUploadTarget = {nodeId: node.id, viewKey: null};
         hiddenImgPicker.click();
       };
-      drop.ondragover = e => { e.preventDefault(); drop.style.borderColor = '#60a5fa'; };
+      drop.ondragover = e => { e.preventDefault(); drop.style.borderColor = node.type === 'mask_ref' ? '#f43f5e' : '#60a5fa'; };
       drop.ondragleave = () => { drop.style.borderColor = ''; };
       drop.ondrop = e => {
         e.preventDefault();
@@ -1517,11 +1907,13 @@ export function initNodeCanvas(hooks) {
       if (node.type !== 'source_image') {
         const noteField = document.createElement('label');
         noteField.className = 'ng-field';
-        noteField.innerHTML = '<span>参考要求说明</span>';
+        noteField.innerHTML = `<span>${node.type === 'mask_ref' ? 'Mask 颜色分区说明（可选）' : '参考要求说明'}</span>`;
         const inp = document.createElement('input');
         inp.className = 'ng-input';
         inp.value = node.params?.note || '';
-        inp.placeholder = '例如：偏二次元赛璐璐上色 / 7.5头身';
+        inp.placeholder = node.type === 'mask_ref'
+          ? '例如：红=外套，蓝=长裙，绿=披肩饰品'
+          : '例如：偏二次元赛璐璐上色';
         inp.onchange = () => {
           node.params.note = inp.value.trim();
           hooks.changed();
@@ -1554,6 +1946,147 @@ export function initNodeCanvas(hooks) {
         };
         nameField.append(nameInp);
         body.append(nameField);
+
+        // Mask-Driven Part Extraction Control (supports upstream `mask_ref` wire OR inline Mask upload!)
+        const maskEdge = incomingEdges(g, node.id).find(e => e.toPort === 'mask');
+        const maskSrcNode = maskEdge ? getNode(g, maskEdge.fromNode) : null;
+        const activeMaskDoc = maskSrcNode?.data?.image || node.data?.maskImage || null;
+        const activeMaskUrl = fileUrl(activeMaskDoc);
+
+        const maskBox = document.createElement('div');
+        maskBox.className = 'ng-mask-box';
+        const maskHead = document.createElement('div');
+        maskHead.className = 'ng-mask-row';
+
+        const thumb = document.createElement('div');
+        thumb.className = 'ng-mask-thumb';
+        if (activeMaskUrl) {
+          const mImg = document.createElement('img');
+          mImg.src = activeMaskUrl;
+          mImg.alt = 'Mask';
+          thumb.append(mImg);
+        } else {
+          thumb.textContent = '🎭';
+        }
+
+        const metaCol = document.createElement('div');
+        metaCol.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:2px';
+        const mTitle = document.createElement('span');
+        mTitle.style.cssText = 'font-size:11px;font-weight:700;color:#fda4af';
+        mTitle.textContent = maskSrcNode
+          ? tr('🎭 已连入上游 Mask 遮罩图', '🎭 Linked Upstream Mask')
+          : node.data?.maskImage
+            ? tr('🎭 已挂载本节点专属 Mask 图', '🎭 Inline Part Mask Attached')
+            : tr('🎭 Mask 遮罩拆件（可选 · 点击或拖入）', '🎭 Part Mask (Optional · Click/Drop)');
+        const mSub = document.createElement('span');
+        mSub.style.cssText = 'font-size:10px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        mSub.textContent = activeMaskDoc
+          ? `${activeMaskDoc.filename || 'mask.png'} (${activeMaskDoc.width || '?'}×${activeMaskDoc.height || '?'})`
+          : tr('提供黑白遮罩或多色 ID 图，自动合成高亮边界引导拆件', 'Upload B/W, alpha, or ID mask for exact boundary split');
+        metaCol.append(mTitle, mSub);
+        maskHead.append(thumb, metaCol);
+
+        if (!maskSrcNode && node.data?.maskImage && !isNodeLocked(node.id)) {
+          const clrBtn = document.createElement('button');
+          clrBtn.type = 'button';
+          clrBtn.className = 'ng-btn danger';
+          clrBtn.style.cssText = 'height:22px;padding:0 6px;font-size:10.5px';
+          clrBtn.title = tr('移除本节点内嵌 Mask', 'Remove inline mask');
+          clrBtn.textContent = '✕';
+          clrBtn.onclick = async ev => {
+            ev.stopPropagation();
+            const {project: curP, files: curF} = hooks.get();
+            const p = structuredClone(curP);
+            const f = new Map(curF);
+            const gn = getNode(ensureNodeGraph(p), node.id);
+            if (gn?.data) gn.data.maskImage = null;
+            pruneUnusedGraphDocuments(p, f);
+            await hooks.commit(p, f);
+            render();
+          };
+          maskHead.append(clrBtn);
+        }
+
+        if (!maskSrcNode) {
+          maskHead.style.cursor = 'pointer';
+          maskHead.onclick = () => {
+            if (isNodeLocked(node.id)) return;
+            pendingUploadTarget = {nodeId: node.id, viewKey: '__mask__'};
+            hiddenImgPicker.click();
+          };
+          maskBox.ondragover = ev => { ev.preventDefault(); maskBox.style.borderColor = '#fb7185'; };
+          maskBox.ondragleave = () => { maskBox.style.borderColor = ''; };
+          maskBox.ondrop = ev => {
+            ev.preventDefault();
+            maskBox.style.borderColor = '';
+            const file = ev.dataTransfer?.files?.[0];
+            if (file) void handleImageUpload(file, node.id, '__mask__');
+          };
+        }
+        maskBox.append(maskHead);
+
+        if (activeMaskDoc || maskSrcNode) {
+          const modeRow = document.createElement('div');
+          modeRow.className = 'ng-mask-row';
+          const modeSel = document.createElement('select');
+          modeSel.style.cssText = 'flex:1;height:24px;font-size:11px;background:#0d1322;color:#f1f5f9;border:1px solid #3f283d;border-radius:5px;padding:0 6px';
+          const modes = [
+            ['auto', tr('自动识别遮罩前景 (黑白/透明/涂色)', 'Auto Detect Mask Region')],
+            ['white', tr('白色区域 = 当前拆出部件', 'White Pixels = Target Part')],
+            ['alpha', tr('不透明区域 (Alpha) = 当前拆出部件', 'Opaque Alpha = Target Part')],
+            ['color', tr('多色 ID Mask · 指定颜色分区', 'Multi-Color ID Mask · Pick Color')],
+          ];
+          for (const [mv, ml] of modes) {
+            const o = document.createElement('option');
+            o.value = mv;
+            o.textContent = ml;
+            modeSel.append(o);
+          }
+          modeSel.value = node.params?.maskMode || 'auto';
+          modeSel.onchange = () => {
+            node.params.maskMode = modeSel.value;
+            hooks.changed();
+            render();
+          };
+          modeRow.append(modeSel);
+
+          if ((node.params?.maskMode || 'auto') === 'color') {
+            const colInp = document.createElement('input');
+            colInp.type = 'color';
+            colInp.value = /^#[0-9a-fA-F]{6}$/.test(node.params?.maskColor || '') ? node.params.maskColor : '#ff3b30';
+            colInp.style.cssText = 'width:26px;height:24px;padding:0;border:1px solid #fb7185;border-radius:4px;background:transparent;cursor:pointer';
+            colInp.onchange = () => {
+              node.params.maskColor = colInp.value;
+              hooks.changed();
+              updateStatusesOnly();
+            };
+            const pickBtn = document.createElement('button');
+            pickBtn.type = 'button';
+            pickBtn.className = 'ng-btn';
+            pickBtn.style.cssText = 'height:24px;padding:0 6px;font-size:10.5px';
+            pickBtn.title = tr('在 Mask 图上点击吸取目标颜色', 'Sample color directly from Mask image');
+            pickBtn.textContent = tr('💧吸色', '💧Pick');
+            pickBtn.onclick = () => {
+              openMaskColorPicker(activeMaskUrl, hex => {
+                node.params.maskColor = hex;
+                hooks.changed();
+                render();
+              });
+            };
+            modeRow.append(colInp, pickBtn);
+          }
+          maskBox.append(modeRow);
+        }
+        body.append(maskBox);
+      } else {
+        // balance_views: show current effective parametric head-to-body ratio badge
+        const numR = resolveNumericHeadBodyRatio(g.headBodyRatio, g.customHeadBodyRatio);
+        const ratioBanner = document.createElement('div');
+        ratioBanner.style.cssText = 'font-size:11px;color:#5eead4;background:rgba(13,42,46,0.55);border:1px solid rgba(45,212,191,0.3);border-radius:6px;padding:5px 8px;display:flex;justify-content:space-between;align-items:center';
+        ratioBanner.innerHTML = numR
+          ? `<span>📏 ${tr('强约束头身比已启用', 'Active Ratio Lock')}</span><strong>${numR} ${tr('头身', 'Heads')}</strong>`
+          : `<span>📏 ${tr('头身比：保持原画默认比例', 'Ratio: Keep Concept Art')}</span><small style="color:#94a3b8">${tr('可在顶部工具栏切换', 'Set in top toolbar')}</small>`;
+        body.append(ratioBanner);
       }
 
       const hintField = document.createElement('label');
@@ -1590,6 +2123,7 @@ export function initNodeCanvas(hooks) {
       body.append(hintField, row);
 
       const keys = node.type === 'balance_views' ? GRAPH_VIEWS_3 : GRAPH_VIEWS_4;
+      let loadedViewCount = 0;
       const grid = document.createElement('div');
       grid.className = 'ng-views-grid' + (keys.length === 3 ? ' cols-3' : '');
       for (const k of keys) {
@@ -1598,6 +2132,7 @@ export function initNodeCanvas(hooks) {
         const doc = node.data?.views?.[k];
         const u = fileUrl(doc);
         if (u) {
+          loadedViewCount++;
           const img = document.createElement('img');
           img.src = u;
           img.alt = k;
@@ -1606,14 +2141,13 @@ export function initNodeCanvas(hooks) {
         const tag = document.createElement('span');
         tag.textContent = VIEW_LABELS[k] || k;
         cell.append(tag);
+        cell.title = u
+          ? tr('点击同屏展开全部视图对比检视', 'Click to expand all views side-by-side')
+          : tr('点击或拖入上传此视角图片', 'Click or drop to upload this view');
         cell.onclick = () => {
           pendingUploadTarget = {nodeId: node.id, viewKey: k};
           if (u) {
-            previewDlg.querySelector('#ngPreviewTitle').textContent = `${node.params?.partName || '视图'} · ${VIEW_LABELS[k]}`;
-            previewDlg.querySelector('#ngPreviewImg').src = u;
-            const repLabel = previewDlg.querySelector('#ngReplaceViewInput')?.closest('label');
-            if (repLabel) repLabel.hidden = isNodeLocked(node.id);
-            previewDlg.showModal();
+            openMultiViewInspector(node.id, k);
           } else {
             if (isNodeLocked(node.id)) {
               hooks.toast('🔒 该节点正在执行任务中，请等待 AI 生成视图完成');
@@ -1622,17 +2156,34 @@ export function initNodeCanvas(hooks) {
             hiddenImgPicker.click();
           }
         };
+        cell.ondragover = ev => { ev.preventDefault(); cell.style.borderColor = '#38bdf8'; };
+        cell.ondragleave = () => { cell.style.borderColor = ''; };
+        cell.ondrop = ev => {
+          ev.preventDefault();
+          cell.style.borderColor = '';
+          const file = ev.dataTransfer?.files?.[0];
+          if (file) void handleImageUpload(file, node.id, k);
+        };
         grid.append(cell);
       }
       body.append(grid);
+
+      const expandAllBtn = document.createElement('button');
+      expandAllBtn.type = 'button';
+      expandAllBtn.className = 'ng-btn cyan';
+      expandAllBtn.style.justifyContent = 'center';
+      expandAllBtn.textContent = keys.length === 3
+        ? tr(`🔍 同屏展开三视图对比 (${loadedViewCount}/3)`, `🔍 Inspect All 3 Views (${loadedViewCount}/3)`)
+        : tr(`🔍 同屏展开四视图对比 (${loadedViewCount}/4)`, `🔍 Inspect All 4 Views (${loadedViewCount}/4)`);
+      expandAllBtn.onclick = () => openMultiViewInspector(node.id, null);
 
       const singleReqBtn = document.createElement('button');
       singleReqBtn.type = 'button';
       singleReqBtn.className = 'ng-btn';
       singleReqBtn.style.justifyContent = 'center';
-      singleReqBtn.textContent = '仅复制此节点拆图指令';
+      singleReqBtn.textContent = tr('仅复制此节点拆图指令', 'Copy AI Prompt for This Node Only');
       singleReqBtn.onclick = () => hooks.requestGraphViews([node.id]);
-      body.append(singleReqBtn);
+      body.append(expandAllBtn, singleReqBtn);
       return body;
     }
 
@@ -1969,6 +2520,7 @@ export function initNodeCanvas(hooks) {
   function render() {
     const g = currentGraph();
     refreshTemplateSelect();
+    refreshGlobalRatioSelect();
     applyWorldTransform();
     nodesLayer.replaceChildren();
 
@@ -2756,8 +3308,11 @@ export function initNodeCanvas(hooks) {
       }
 
       const oldSrc = g.nodes.find(n => n.type === 'source_image')?.data?.image || null;
+      const oldMask = g.nodes.find(n => n.type === 'mask_ref')?.data?.image || null;
       const oldStyle = g.nodes.find(n => n.type === 'style_ref')?.data?.image || null;
       const oldRatio = g.nodes.find(n => n.type === 'ratio_ref')?.data?.image || null;
+      const prevHeadRatio = g.headBodyRatio || 'keep';
+      const prevCustomRatio = g.customHeadBodyRatio ?? 6.8;
       const {project: curP, files: curF} = hooks.get();
       const p = structuredClone(curP);
       const f = new Map(curF);
@@ -2805,7 +3360,10 @@ export function initNodeCanvas(hooks) {
       }
 
       p.placements = {};
+      p.nodeGraph.headBodyRatio = prevHeadRatio;
+      p.nodeGraph.customHeadBodyRatio = prevCustomRatio;
       if (oldSrc) { const s = p.nodeGraph.nodes.find(n => n.type === 'source_image'); if (s) s.data.image = oldSrc; }
+      if (oldMask) { const s = p.nodeGraph.nodes.find(n => n.type === 'mask_ref'); if (s) s.data.image = oldMask; }
       if (oldStyle) { const s = p.nodeGraph.nodes.find(n => n.type === 'style_ref'); if (s) s.data.image = oldStyle; }
       if (oldRatio) { const s = p.nodeGraph.nodes.find(n => n.type === 'ratio_ref'); if (s) s.data.image = oldRatio; }
       pruneUnusedGraphDocuments(p, f);
@@ -2825,7 +3383,37 @@ export function initNodeCanvas(hooks) {
   // --- Toolbar Bindings ---
   $('#ngTemplateSelect').onchange = ev => void applyTemplateByKey(ev.target.value);
   $('#ngApplyTemplate').onclick = () => void applyTemplateByKey($('#ngTemplateSelect').value);
-  onLocaleChange(() => refreshTemplateSelect());
+  $('#ngGlobalRatioSelect').onchange = ev => {
+    const g = currentGraph();
+    pushUndo();
+    g.headBodyRatio = ev.target.value || 'keep';
+    if (g.headBodyRatio === 'custom' && !g.customHeadBodyRatio) g.customHeadBodyRatio = 6.8;
+    refreshGlobalRatioSelect();
+    hooks.changed();
+    render();
+    const numR = resolveNumericHeadBodyRatio(g.headBodyRatio, g.customHeadBodyRatio);
+    window.dispatchEvent(new CustomEvent('morphogem-ratio-changed', {detail: {ratio: numR}}));
+    hooks.toast(
+      numR
+        ? tr(`📏 已切换强约束头身比：${numR} 头身（导出拆图时自动附带分格标尺图）`, `📏 Ratio locked to ${numR} heads (auto-exports orthographic ruler grid)`)
+        : tr('📏 已恢复为保持原画默认头身比例', '📏 Restored original concept art proportions')
+    );
+  };
+  $('#ngGlobalRatioCustom').onchange = ev => {
+    const g = currentGraph();
+    const v = Math.max(1.5, Math.min(9.5, Number(Number(ev.target.value || 6.8).toFixed(2))));
+    ev.target.value = String(v);
+    pushUndo();
+    g.headBodyRatio = 'custom';
+    g.customHeadBodyRatio = v;
+    hooks.changed();
+    render();
+    window.dispatchEvent(new CustomEvent('morphogem-ratio-changed', {detail: {ratio: v}}));
+  };
+  onLocaleChange(() => {
+    refreshTemplateSelect();
+    refreshGlobalRatioSelect();
+  });
   $('#ngSaveTemplate').onclick = () => openSavePresetDialog('template');
   $('#ngSaveBranch').onclick = () => openSavePresetDialog('branch');
   $('#ngManagePresets').onclick = () => {
@@ -2888,7 +3476,6 @@ export function initNodeCanvas(hooks) {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (file && pendingUploadTarget) {
-      previewDlg.close();
       void handleImageUpload(file, pendingUploadTarget.nodeId, pendingUploadTarget.viewKey);
     }
   };

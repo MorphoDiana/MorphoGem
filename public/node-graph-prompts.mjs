@@ -6,6 +6,8 @@ import {
   getNode,
   incomingEdges,
   nodeStatus,
+  resolveGraphHeadBodyRatio,
+  resolveNumericHeadBodyRatio,
 } from './node-graph.mjs';
 import {normalizeLocale} from './i18n.mjs';
 
@@ -141,9 +143,9 @@ export function buildNodeGraphViewsPrompt(request, appRoot, origin, p, targetNod
     lines.push(`node "${sessionScript}" begin ${origin} ${request.id}`);
     lines.push('Confirm the JSON output includes `"saved": true` and record `path` (active `project.mgem`) and `directory` (project work folder).');
     lines.push('');
-    lines.push('### Step 2: Export Reference Inputs & Inspect Every Image Visually');
+    lines.push('### Step 2: Export Reference Inputs, Mask Overlays & Proportion Ruler Grid');
     lines.push(`node "${cliScript}" export-inputs "<path>" "<directory>/work/graph_inputs"`);
-    lines.push('Inspect every exported image with your vision tool. Strictly separate **Source Concept** (100% design identity), **Style Reference** (brushwork/coloring transfer ONLY), and **Proportion Reference** (body/head ratio ONLY).');
+    lines.push('Inspect every exported image (including any auto-generated `proportion_ruler_<R>H.png` and `<nodeId>_mask_overlay.png`) with your vision tool. Strictly separate **Source Concept** (100% design identity), **Mask Overlay** (exact pixel extraction region), and **Style Reference** (brushwork/coloring transfer ONLY).');
     lines.push('');
     lines.push('### Step 3: Generate Orthographic Views per Node Contract (Front Anchor First -> Left / Right / Back)');
     lines.push('- **Orientation & Mirror Law**: `front` 0°; `left` **character-left profile facing left (`<--`)**; `right` **character-right profile facing right (`-->`)**; `back` 180° (**horizontally mirrored** relative to `front` for asymmetric accessories!). In T-Pose profiles, the near arm points straight toward the camera — never draw an extra forward-pointing arm.');
@@ -161,9 +163,9 @@ export function buildNodeGraphViewsPrompt(request, appRoot, origin, p, targetNod
     lines.push(`node "${sessionScript}" begin ${origin} ${request.id}`);
     lines.push('确认输出包含 `"saved": true` 并记录返回的 `path`（主 `project.mgem` 路径）与 `directory`（项目工作目录）。');
     lines.push('');
-    lines.push('### 第 2 步：导出画布输入参考图并用读图工具逐张检视');
+    lines.push('### 第 2 步：导出画布输入参考图、Mask 高亮边界合成图与头身比标尺图');
     lines.push(`node "${cliScript}" export-inputs "<path>" "<directory>/work/graph_inputs"`);
-    lines.push('解包后请调用读图工具仔细观察每张参考图的不对称配饰与层次结构，严格隔离「主立绘（100%继承外观设定）」、「画风参考（仅迁移笔触上色，禁串服饰）」与「头身比参考（仅迁移体型比例，禁串外观）」。');
+    lines.push('解包后请务必调用读图工具逐张检视（包括自动生成的 `proportion_ruler_<R>H.png` 分格标尺图与 `<nodeId>_mask_overlay.png` 遮罩高亮合成图），严格遵守「主立绘继承外观设定」、「Mask 决定像素级拆件边界」、「参数化头身比决定解剖长宽比」。');
     lines.push('');
     lines.push('### 第 3 步：按节点契约逐一绘制正交多方向视图（先立正面基准，再推左/右/背）');
     lines.push('- **方向与镜像铁律**：`front` 正面 0°；`left` **角色/物件自身左侧面**（面朝画面左方 `<--`）；`right` **角色/物件自身右侧面**（面朝画面右方 `-->`）；`back` 背面 180°（左右不对称装饰必须与正面严格水平镜像！）。侧面 T-Pose 近端手臂朝镜头方向平伸，严禁多画一条向前伸出的手臂。');
@@ -197,13 +199,51 @@ export function buildNodeGraphViewsPrompt(request, appRoot, origin, p, targetNod
     }
   }
 
+  const globalRatio = resolveGraphHeadBodyRatio(g);
+  if (globalRatio) {
+    const headPct = (100 / globalRatio).toFixed(1);
+    const bodyUnits = Number(Math.max(0.5, globalRatio - 1).toFixed(2));
+    const bodyPct = (100 - Number(headPct)).toFixed(1);
+    if (isEn) {
+      lines.push(`### 📏 HIGH-WEIGHT PARAMETRIC PROPORTION LOCK: **${globalRatio} Heads Tall (${globalRatio}H)**`);
+      lines.push(`- **Mandatory Visual Ruler**: Read \`<directory>/work/graph_inputs/proportion_ruler_${globalRatio}H.png\` and pass it as a layout/proportion reference when generating full-body and torso/body views.`);
+      lines.push(`- **Hard Anatomical Equation**: Total height = **${globalRatio} × Head Height** -> Head = **1.0H (${headPct}%)** | Neck + Torso + Legs combined = **ONLY ${bodyUnits}H (${bodyPct}%)**.`);
+      if (globalRatio <= 3.5) {
+        lines.push(`- **Chibi Re-Proportioning Override (CRITICAL)**: Override any tall limbs in the source concept art! For headless body/torso nodes, the entire neck-to-shoes height equals ONLY **${bodyUnits} head-units** — draw a compact rounded chibi torso, dramatically shortened chubby legs/arms, and plump hands/shoes so it never drifts back to a 6–7 head anime body!`);
+      } else if (globalRatio <= 5.2) {
+        lines.push(`- **Semi-Chibi Build**: Keep a compact **${bodyUnits}H** neck-to-shoes body length with slightly fuller, shorter limbs.`);
+      } else {
+        lines.push(`- **Slender Proportional Build**: Maintain an exact **${bodyUnits}H** neck-to-shoes vertical span with consistent shoulder-to-hip and torso-to-leg proportions.`);
+      }
+      lines.push('');
+    } else {
+      lines.push(`### 📏 最高权重参数化头身比强约束：**严格锁定 ${globalRatio} 头身 (${globalRatio}H)**`);
+      lines.push(`- **必看正交分格标尺图**：\`export-inputs\` 已自动生成 \`<directory>/work/graph_inputs/proportion_ruler_${globalRatio}H.png\`，绘制全身三视图及无头身体/服装躯干节点时**必须读取并参照该分格标尺图**！`);
+      lines.push(`- **硬性解剖比例公式**：角色全身总高 = **${globalRatio} 个头高** -> 头部占 **1.0H (${headPct}%)**，脖子+躯干+双腿总长严格等于 **${bodyUnits}H (${bodyPct}%)**。`);
+      if (globalRatio <= 3.5) {
+        lines.push(`- **Q版/盲盒比例强制改写（严禁沿用原画长腿！）**：即使主立绘是修长成女/少年，也必须彻底重塑为 **${globalRatio} 头身 Q版豆豆/粘土体型**！尤其在拆解「无头身体/服装躯干」节点时，无头身体从领口到鞋底总高度仅有 **${bodyUnits} 个头高**，必须大幅缩短大腿小腿与手臂长度、加粗圆润手脚与躯干长宽比，绝不可惯性画回 6~7 头身的修长素体！`);
+      } else if (globalRatio <= 5.2) {
+        lines.push(`- **轻Q版/半Q体型要求**：无头身体总长锁定为 **${bodyUnits} 个头高**，四肢适度缩短并保持灵动微圆润体块。`);
+      } else {
+        lines.push(`- **修长标准体型要求**：无头身体从领口至鞋底严格保持 **${bodyUnits} 个头高** 的修长肩胯与上下身比例。`);
+      }
+      lines.push('');
+    }
+  }
+
   targets.forEach((node, idx) => {
     const srcEdge = incomingEdges(g, node.id, 'source')[0];
+    const maskEdge = incomingEdges(g, node.id, 'mask')[0];
     const styleEdge = incomingEdges(g, node.id, 'style')[0];
     const ratioEdge = incomingEdges(g, node.id, 'ratio')[0];
     const srcNode = srcEdge ? getNode(g, srcEdge.fromNode) : null;
+    const maskNode = maskEdge ? getNode(g, maskEdge.fromNode) : null;
     const styleNode = styleEdge ? getNode(g, styleEdge.fromNode) : null;
     const ratioNode = ratioEdge ? getNode(g, ratioEdge.fromNode) : null;
+    const effectiveNodeRatio = resolveNumericHeadBodyRatio(node.params?.headBodyRatio, node.params?.customHeadBodyRatio) || globalRatio;
+    const hasMask = Boolean(maskNode?.data?.image || node.data?.maskImage);
+    const maskMode = node.params?.maskMode || 'auto';
+    const maskColor = node.params?.maskColor || '#ff3b30';
 
     const poseDesc = node.params?.pose === 'a'
       ? (isEn ? 'A-Pose (arms ~35°-45° downward, clear armpit/waist gaps)' : 'A-Pose（双臂斜向下约 35°~45° 对称张开，腋下与腰侧留足透明间隙）')
@@ -219,7 +259,26 @@ export function buildNodeGraphViewsPrompt(request, appRoot, origin, p, targetNod
       lines.push(`${idx + 1}. **Node ID**: \`${node.id}\` | **Target Component**: **"${node.params?.partName || 'Full-Body 3-View Guide'}"**${node.params?.modName ? ` *(Mod: ${node.params.modName})*` : ''}`);
       lines.push(`   - Output Views: ${viewKeys.map(k => `\`${k}\``).join(', ')} (${viewKeys.length} × \`${res}×${res}\` RGBA transparent PNGs)`);
       lines.push(`   - Pose Requirement: ${poseDesc}`);
+      if (effectiveNodeRatio) {
+        lines.push(`   - Locked Head-to-Body Ratio: **${effectiveNodeRatio}H** (reference \`<directory>/work/graph_inputs/proportion_ruler_${effectiveNodeRatio}H.png\`)`);
+      }
       if (node.params?.promptHint) lines.push(`   - User Note: ${node.params.promptHint}`);
+      if (hasMask) {
+        const maskSrcLabel = maskNode
+          ? `upstream Mask node \`${maskNode.id}\` (${maskNode.data?.image?.filename || 'mask'})`
+          : `inline node Mask \`${node.id}_mask\` (${node.data?.maskImage?.filename || 'mask'})`;
+        const modeExplain = maskMode === 'color'
+          ? `Multi-Color ID Mask target color **\`${maskColor}\`**`
+          : maskMode === 'alpha'
+            ? 'Opaque Alpha pixels = target component'
+            : maskMode === 'white'
+              ? 'White foreground pixels = target component'
+              : 'Auto-detected foreground mask region';
+        lines.push(`   - 🎭 **MASK-GUIDED EXTRACTION CONTRACT (100% BOUNDARY PRIORITY)**:`);
+        lines.push(`     * Mask Source: ${maskSrcLabel} | Mode: ${modeExplain}${maskNode?.params?.note ? ` | Legend: ${maskNode.params.note}` : ''}`);
+        lines.push(`     * **MUST Inspect Composite Guide**: \`<directory>/work/graph_inputs/${node.id}_mask_overlay.png\` (target component is 100% bright inside the \`#00F0FF\` cyan contour; everything dimmed dark outside the mask MUST be excluded!).`);
+        lines.push(`     * Reconstruct hidden inner/side/180°-back surfaces of ONLY this masked component cleanly with zero neighboring parts attached.`);
+      }
       for (const rule of craftRules) lines.push(`   - 3D Part Rule: ${rule}`);
       for (const mRule of modCraftRules) lines.push(`   - 🧩 Mod Rule: ${mRule}`);
       lines.push(`   - Source Concept: \`${srcNode?.id || 'unconnected'}\` (${srcNode?.data?.image?.filename || 'none'})`);
@@ -227,13 +286,32 @@ export function buildNodeGraphViewsPrompt(request, appRoot, origin, p, targetNod
         lines.push(`   - Style Reference: \`${styleNode.id}\` (${styleNode.data.image.filename}) — ${styleNode.params?.note || 'match linework & shading only'}`);
       }
       if (ratioNode?.data?.image) {
-        lines.push(`   - Proportion Reference: \`${ratioNode.id}\` (${ratioNode.data.image.filename}) — ${ratioNode.params?.note || 'match head-to-body ratio only'}`);
+        lines.push(`   - Legacy Proportion Reference: \`${ratioNode.id}\` (${ratioNode.data.image.filename}) — ${ratioNode.params?.note || 'match head-to-body ratio only'}`);
       }
     } else {
       lines.push(`${idx + 1}. **节点 ID**: \`${node.id}\` | **目标拆出部件**: **「${node.params?.partName || '全身比例三视图'}」**${node.params?.modName ? ` *(来自 Mod: ${node.params.modName})*` : ''}`);
       lines.push(`   - 输出规格: ${viewKeys.map(k => `\`${k}\``).join(', ')}（共 ${viewKeys.length} 张 \`${res}×${res}\` 真实 RGBA 透明底 PNG）`);
       lines.push(`   - 姿态标准: ${poseDesc}`);
+      if (effectiveNodeRatio) {
+        lines.push(`   - 锁定头身比例: **严格执行 ${effectiveNodeRatio} 头身**（参照标尺图 \`<directory>/work/graph_inputs/proportion_ruler_${effectiveNodeRatio}H.png\`）`);
+      }
       if (node.params?.promptHint) lines.push(`   - 用户补充要求: ${node.params.promptHint}`);
+      if (hasMask) {
+        const maskSrcLabel = maskNode
+          ? `上游 Mask 节点 \`${maskNode.id}\` (${maskNode.data?.image?.filename || 'mask'})`
+          : `本节点内嵌 Mask \`${node.id}_mask\` (${node.data?.maskImage?.filename || 'mask'})`;
+        const modeExplain = maskMode === 'color'
+          ? `多色 ID Mask 指定色块 **\`${maskColor}\`**`
+          : maskMode === 'alpha'
+            ? '不透明 Alpha 区域为目标部件'
+            : maskMode === 'white'
+              ? '白色高亮区域为目标部件'
+              : '自动识别遮罩高亮前景';
+        lines.push(`   - 🎭 **Mask 遮罩精准拆件强契约（最高边界优先级！）**:`);
+        lines.push(`     * 遮罩来源: ${maskSrcLabel} | 识别规则: ${modeExplain}${maskNode?.params?.note ? ` | 分区说明: ${maskNode.params.note}` : ''}`);
+        lines.push(`     * **必读高亮叠加引导图**: \`<directory>/work/graph_inputs/${node.id}_mask_overlay.png\`（图中 \`#00F0FF\` 青色轮廓线内 100% 正常亮度的区域即为本节点唯一要拆出的目标部件，外围压暗区域必须 100% 剔除剥离！）。`);
+        lines.push(`     * 请严格仅提取该遮罩选区对应的独立部件，并按主立绘材质逻辑合理补全其在正/左/右/背视角下原本被其他部位遮挡的内部与背面闭环结构。`);
+      }
       for (const rule of craftRules) lines.push(`   - 3D 拆件工艺要点: ${rule}`);
       for (const mRule of modCraftRules) lines.push(`   - 🧩 Mod 专属拆解规范: ${mRule}`);
       lines.push(`   - 主立绘输入: \`${srcNode?.id || '未连接'}\` (${srcNode?.data?.image?.filename || '未上传'})`);

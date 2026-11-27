@@ -1157,3 +1157,212 @@ body.node-graph-active #nodeGraphWorkspace {
   padding-top: 12px;
   border-top: 1px dashed var(--line);
 }
+
+/* --- Multi-View Side-by-Side Comparison Lightbox & Alignment Laser Lines --- */
+dialog#ngImagePreviewDialog {
+  max-width: min(1420px, 95vw) !important;
+  width: min(1420px, 95vw) !important;
+  padding: 16px 18px !important;
+}
+
+.mv-inspector-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid #28354d;
+}
+
+.mv-bg-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mv-sheet-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #28354d;
+  background: #0b1120;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.mv-sheet-grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mv-slot-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid #293548;
+  border-radius: 9px;
+  padding: 8px;
+  transition: border-color 0.14s ease;
+}
+
+.mv-slot-card.focused {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.35);
+}
+
+.mv-slot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+.mv-align-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.mv-align-tag.ok {
+  background: rgba(16, 185, 129, 0.18);
+  color: #6ee7b7;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.mv-align-tag.warn {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.38);
+}
+
+.mv-img-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 7px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.mv-sheet-grid[data-bg="checker"] .mv-img-frame {
+  background-color: #131b2e;
+  background-image:
+    linear-gradient(45deg, #1e293b 25%, transparent 25%),
+    linear-gradient(-45deg, #1e293b 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1e293b 75%),
+    linear-gradient(-45deg, transparent 75%, #1e293b 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+}
+
+.mv-sheet-grid[data-bg="black"] .mv-img-frame {
+  background: #05070c;
+}
+
+.mv-sheet-grid[data-bg="white"] .mv-img-frame {
+  background: #ffffff;
+}
+
+.mv-sheet-grid[data-bg="magenta"] .mv-img-frame {
+  background: #e60099;
+}
+
+.mv-img-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+}
+
+.mv-laser-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.mv-laser-line.top {
+  border-top: 1.5px dashed rgba(56, 189, 248, 0.92);
+}
+
+.mv-laser-line.mid {
+  border-top: 1px dotted rgba(148, 163, 184, 0.48);
+}
+
+.mv-laser-line.bot {
+  border-top: 1.5px dashed rgba(52, 211, 153, 0.92);
+}
+
+.mv-slot-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+/* Inline Mask Slot on part_views cards & Port Dot Color */
+.ng-port-dot[data-kind="mask"] {
+  background: #f43f5e !important;
+  box-shadow: 0 0 6px rgba(244, 63, 94, 0.6);
+}
+
+.ng-mask-box {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: rgba(244, 63, 94, 0.08);
+  border: 1px dashed rgba(244, 63, 94, 0.36);
+}
+
+.ng-mask-box.active {
+  border-style: solid;
+  background: rgba(244, 63, 94, 0.13);
+}
+
+.ng-mask-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.ng-mask-thumb {
+  width: 30px;
+  height: 30px;
+  border-radius: 5px;
+  object-fit: contain;
+  background: #090d16;
+  border: 1px solid rgba(244, 63, 94, 0.45);
+  flex-shrink: 0;
+}
+
+/* 4-up compact strip on part_views node card */
+.ng-views-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 5px !important;
+}
+.ng-views-grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}

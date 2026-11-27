@@ -62,9 +62,11 @@ flowchart LR
 - Use the **Template dropdown** on the top-left of the Node Canvas (switches immediately on selection):
   - **Standard Character Split**: `Hairless Bare Head` + `Isolated Hair` + `Clothed Body` + `3-View Proportion Guide`.
   - **Deluxe 6-Part Composite**: `Bare Head + Hair + Upper Outfit + Skirt/Boots + Wings + Main Weapon`.
+  - **Mask-Guided Part Extraction**: Extract intricate garments or accessories with pixel-exact Mask boundaries.
   - **Standalone Prop / Weapon**: Single 90°-upright prop workflow.
   - **🧩 Mod Templates**: e.g. the built-in **Chibi Blindbox 3-Piece Kit**.
-- Upload your main character illustration into the **Source Concept** node, and optionally add a **Style Reference** or **Proportion Reference**.
+- **📏 High-Weight Parametric Head-to-Body Ratio**: Select an exact head-to-body ratio right on the top toolbar (`2.0H`, `2.5H Blindbox`, `3.0H Chibi`, `6.8H Anime`, `7.5H Tall`, or custom `1.5~9.5H`). MorphoGem auto-generates an orthographic head-unit ruler chart PNG for AI generation and syncs 3D head-vs-body scaling in the 3D Viewport!
+- **🎭 Mask-Driven Part Extraction & 🔍 4-Up Multi-View Lightbox**: Attach a B/W, alpha, or multi-color ID Mask (with built-in **`💧Pick` eyedropper**) via a **`🎭 Part Mask`** node or inline dropzone to auto-composite a `#00F0FF` contour guide. Click any view slot or **`🔍 Inspect All 4 Views`** to expand Front / Left / Right / Back side-by-side with pixel-alignment laser lines and a Magenta white-fringe backdrop!
 
 ### Step 2: Copy AI Views Prompt & Paste into Antigravity (`Neon` / `Carbon`)
 1. Click **`✨ Copy AI Views Prompt`** on the canvas toolbar.

@@ -9,9 +9,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { verifyFbxHeader } from './src/downloads.mjs';
 import { createNewProject, packProject, unpackProject, checkFBX } from '../public/mgem-project.mjs';
-import { registerGraphDocument, createNode, connectPorts, nodeStatus } from '../public/node-graph.mjs';
+import { registerGraphDocument, createNode, connectPorts, nodeStatus, defaultHeightForPartName } from '../public/node-graph.mjs';
 import { buildNodeGraphViewsPrompt, computeLockedNodesForViews } from '../public/node-graph-prompts.mjs';
 import { SUPPORTED_LOCALES } from '../public/i18n.mjs';
+import { encodeRgbaPng } from '../scripts/mask-and-ratio-guides.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,6 +74,28 @@ async function testMgemArchiveAndBilingualPrompts() {
   const doc = await registerGraphDocument(proj, files, 'concept.png', new Uint8Array(png1x1), 'src');
   srcNode.data.image = { ...doc, mime: 'image/png', width: 1, height: 1 };
 
+  // Verify Parametric Head-to-Body Ratio (2.5H chibi) & Mask-Guided Part Extraction (`mask_ref` + `export-inputs` overlays)
+  proj.nodeGraph.headBodyRatio = '2.5';
+  assert.ok(defaultHeightForPartName('无发裸脸', 2.5, 1.5) > 0.55, '2.5H chibi head should be ~0.60m on 1.5m character');
+  assert.ok(defaultHeightForPartName('服装身体', 2.5, 1.5) < 1.05, '2.5H chibi headless body should be compact (<1.05m)');
+
+  const maskRgba = new Uint8Array(4 * 4 * 4);
+  for (let i = 0; i < 16; i++) {
+    const isCenter = i === 5 || i === 6 || i === 9 || i === 10;
+    maskRgba[i * 4] = isCenter ? 255 : 0;
+    maskRgba[i * 4 + 1] = isCenter ? 255 : 0;
+    maskRgba[i * 4 + 2] = isCenter ? 255 : 0;
+    maskRgba[i * 4 + 3] = 255;
+  }
+  const maskPng = encodeRgbaPng(4, 4, maskRgba);
+  const maskNode = createNode('mask_ref', 60, 380, { note: '白色=披肩外套' });
+  const maskDoc = await registerGraphDocument(proj, files, 'cape_mask.png', new Uint8Array(maskPng), 'mask_ref');
+  maskNode.data.image = { ...maskDoc, mime: 'image/png', width: 4, height: 4 };
+  proj.nodeGraph.nodes.push(maskNode);
+  const firstPartNode = proj.nodeGraph.nodes.find(n => n.type === 'part_views');
+  firstPartNode.params.maskMode = 'white';
+  connectPorts(proj.nodeGraph, maskNode.id, 'mask', firstPartNode.id, 'mask');
+
   // Verify Smart Mesh UV+Retexture params & standalone `tripo_retexture` node roundtrip
   const smartMeshNode = createNode('tripo_mesh', 500, 120, { quality: 'smart', polyFaces: 18000, smartUv: true, autoRetexture: true });
   assert.equal(smartMeshNode.params.smartUv, true);
@@ -85,11 +108,33 @@ async function testMgemArchiveAndBilingualPrompts() {
   const packed = await packProject(proj, files);
   const unpacked = await unpackProject(packed.bytes);
   assert.equal(unpacked.project.name, 'MorphoDiana');
-  assert.equal(unpacked.files.size, 1);
+  assert.equal(unpacked.files.size, 2);
+
+  // Verify `node-graph-cli.mjs export-inputs` generates both `proportion_ruler_2.5H.png` & `<partNodeId>_mask_overlay.png`
+  const tmpWork = await fs.mkdtemp(path.join(os.tmpdir(), 'mgem-v22-smoke-'));
+  try {
+    const tmpMgem = path.join(tmpWork, 'test.mgem');
+    const outInputs = path.join(tmpWork, 'graph_inputs');
+    await fs.writeFile(tmpMgem, packed.bytes);
+    const { stdout: expOut } = await execFileAsync(process.execPath, [
+      path.join(appRoot, 'scripts', 'node-graph-cli.mjs'),
+      'export-inputs',
+      tmpMgem,
+      outInputs,
+    ]);
+    const expJson = JSON.parse(expOut);
+    assert.equal(expJson.headBodyRatio, 2.5);
+    assert.ok(expJson.proportionRulerPath && expJson.proportionRulerPath.endsWith('proportion_ruler_2.5H.png'));
+    assert.equal(expJson.maskGuides.length, 1);
+    assert.ok(expJson.maskGuides[0].overlayPath && expJson.maskGuides[0].overlayPath.endsWith(`${firstPartNode.id}_mask_overlay.png`));
+  } finally {
+    await fs.rm(tmpWork, { recursive: true, force: true });
+  }
 
   const lockInfo = computeLockedNodesForViews(unpacked.project.nodeGraph);
   assert.ok(lockInfo.targetNodeIds.length >= 2, 'Should target dirty part_views nodes');
   assert.ok(lockInfo.lockedNodeIds.includes(srcNode.id), 'Upstream source_image should be locked during AI run');
+  assert.ok(lockInfo.lockedNodeIds.includes(maskNode.id), 'Upstream mask_ref should be locked during AI run');
 
   for (const locale of ['zh-CN', 'en']) {
     const prompt = buildNodeGraphViewsPrompt(
@@ -102,6 +147,8 @@ async function testMgemArchiveAndBilingualPrompts() {
     );
     assert.ok(prompt.includes('scripts/mgem-session.mjs'), `Prompt (${locale}) missing mgem-session.mjs`);
     assert.ok(prompt.includes('scripts/align_views.py'), `Prompt (${locale}) missing align_views.py`);
+    assert.ok(prompt.includes('proportion_ruler_2.5H.png'), `Prompt (${locale}) missing parametric ratio ruler`);
+    assert.ok(prompt.includes(`${firstPartNode.id}_mask_overlay.png`), `Prompt (${locale}) missing mask highlight overlay`);
     assert.ok(prompt.includes('skills/morphogem-orthographic-views/SKILL.md'), `Prompt (${locale}) missing orthographic skill`);
     assert.ok(prompt.includes('skills/morphogem-albedo-shading/SKILL.md'), `Prompt (${locale}) missing albedo skill`);
     assert.ok(prompt.includes('skills/morphogem-alpha-alignment/SKILL.md'), `Prompt (${locale}) missing alpha-alignment skill`);
