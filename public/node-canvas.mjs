@@ -40,6 +40,12 @@ import {
   renderProportionMannequinRgba,
   drawProportionMannequinToCanvas,
 } from './proportion-mannequin.mjs';
+import {
+  analyzeMaskColorBlocks,
+  compositeMaskHighlightRgba,
+  friendlyColorName,
+  hexToRgb,
+} from './mask-color-analyzer.mjs';
 import {tr, onLocaleChange, isEn} from './i18n.mjs';
 
 const KIND_COLORS = {
@@ -149,6 +155,7 @@ export function initNodeCanvas(hooks) {
         <button type="button" id="ngFitCanvas" class="ng-btn" title="聚焦选中节点或适应全图 (F / Home)">适应全图</button>
       </div>
       <div class="ng-toolbar-group">
+        <button type="button" id="ngInspectAllViewsBtn" class="ng-btn cyan" title="将画布中所有部件的四视图按行上下排开，一屏总览对比全角色所有识图">🔍 全图识图总览</button>
         <button type="button" id="ngRequestViews" class="ng-btn primary">✨ 复制 AI 拆图指令</button>
         <button type="button" id="ngRunAllTripo" class="ng-btn emerald">▶ 一键直跑 3D 节点</button>
       </div>
@@ -204,7 +211,11 @@ export function initNodeCanvas(hooks) {
       <button type="button" id="ngClosePreview">×</button>
     </div>
     <div class="mv-inspector-toolbar">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="display:inline-flex;gap:4px">
+          <button type="button" class="ng-pill active" id="mvScopeSingleBtn">当前部件 (1×4)</button>
+          <button type="button" class="ng-pill" id="mvScopeMatrixBtn">📋 全角色所有部件总表 (N×4)</button>
+        </div>
         <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#e0f2fe;font-weight:600;cursor:pointer">
           <input type="checkbox" id="mvShowLaserChk" checked>
           <span id="mvShowLaserLabel">📏 显示像素上下对齐激光参考线</span>
@@ -220,6 +231,7 @@ export function initNodeCanvas(hooks) {
       </div>
     </div>
     <div class="mv-sheet-grid" id="mvSheetGrid" data-bg="checker"></div>
+    <div class="mv-matrix-stack" id="mvMatrixStack" hidden></div>
     <input type="file" id="ngReplaceViewInput" accept=".png,.jpg,.jpeg,.webp" hidden>
     <div class="dialog-actions" style="margin-top:12px;justify-content:space-between;flex-wrap:wrap">
       <span id="mvFooterTip" style="font-size:11.5px;color:#94a3b8">提示：可直接将本地图片拖拽到任意视角槽位上进行替换</span>
@@ -247,6 +259,32 @@ export function initNodeCanvas(hooks) {
   `;
   document.body.append(maskPickerDlg);
   maskPickerDlg.querySelector('#ngMaskPickerClose').onclick = () => maskPickerDlg.close();
+
+  // Multi-Color ID Mask Auto-Split & Part Naming Modal
+  const multiMaskDlg = document.createElement('dialog');
+  multiMaskDlg.id = 'ngMultiMaskSplitDialog';
+  multiMaskDlg.innerHTML = `
+    <div class="dialog-top">
+      <h2 id="mmSplitTitle">🪄 多色块 Mask 自动识别与一键建拆件分支</h2>
+      <button type="button" id="mmSplitCloseX">×</button>
+    </div>
+    <p id="mmSplitDesc" style="font-size:12px;color:#94a3b8;margin:6px 0 8px">
+      已自动聚类剔除抗锯齿杂色并识别出以下色块分区（左侧预览为该色块对应原画高亮区域）。请确认每个色块的部件名称，一键生成全部「拆图 + Tripo 建模」分支：
+    </p>
+    <div class="mm-region-list" id="mmRegionList"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <button type="button" id="mmPickExtraBtn" class="ng-btn">💧 在图上手动点击补充微小色块…</button>
+      <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#cbd5e1;cursor:pointer">
+        <input type="checkbox" id="mmReplaceEmptyChk" checked>
+        <span id="mmReplaceEmptyLbl">自动清理画布原有的空白未生成拆件节点</span>
+      </label>
+    </div>
+    <div class="dialog-actions" style="justify-content:flex-end;gap:8px">
+      <button type="button" id="mmCancelBtn" class="ng-btn">取消</button>
+      <button type="button" id="mmConfirmGenerateBtn" class="ng-btn primary">✨ 一键生成拆件 + 3D 建模分支</button>
+    </div>
+  `;
+  document.body.append(multiMaskDlg);
 
   // Live Interactive Parametric Body Proportion Studio Modal
   const propStudioDlg = document.createElement('dialog');
@@ -421,6 +459,7 @@ export function initNodeCanvas(hooks) {
   const DEFAULT_FOOTER = 'Space / Shift+A 搜索添加节点与分支 · Del / X 删除 · Shift+D 克隆 · G 抓取移动 · B / Shift+左键 框选 · Alt+左键划断连线 · 拖线松手自动建节点';
 
   const blobUrls = new Map();
+  const decodedImgCache = new Map(); // sha256|maxDim -> Promise<{width,height,rgba,blocks?}>
   const selectedNodeIds = new Set();
   const undoStack = [];
   const redoStack = [];
@@ -804,6 +843,77 @@ export function initNodeCanvas(hooks) {
   function clearBlobUrls() {
     for (const u of blobUrls.values()) URL.revokeObjectURL(u);
     blobUrls.clear();
+    decodedImgCache.clear();
+  }
+
+  function decodeSmallImage(docRef, maxDim = 240, {withColorBlocks = false} = {}) {
+    if (!docRef?.path) return Promise.resolve(null);
+    const cacheKey = `${docRef.sha256 || docRef.path}|${maxDim}`;
+    let p = decodedImgCache.get(cacheKey);
+    if (!p) {
+      const u = fileUrl(docRef);
+      if (!u) return Promise.resolve(null);
+      p = new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const nw = img.naturalWidth || maxDim;
+            const nh = img.naturalHeight || maxDim;
+            const sc = Math.min(1, maxDim / Math.max(nw, nh));
+            const cw = Math.max(1, Math.round(nw * sc));
+            const ch = Math.max(1, Math.round(nh * sc));
+            const cvs = document.createElement('canvas');
+            cvs.width = cw;
+            cvs.height = ch;
+            const ctx = cvs.getContext('2d', {willReadFrequently: true});
+            ctx.drawImage(img, 0, 0, cw, ch);
+            const rgba = new Uint8Array(ctx.getImageData(0, 0, cw, ch).data);
+            resolve({width: cw, height: ch, rgba, blocks: null});
+          } catch {
+            resolve(null);
+          }
+        };
+        img.onerror = () => resolve(null);
+        img.src = u;
+      });
+      decodedImgCache.set(cacheKey, p);
+    }
+    if (!withColorBlocks) return p;
+    return p.then(res => {
+      if (!res) return null;
+      if (!res.blocks) {
+        res.blocks = analyzeMaskColorBlocks(res.rgba, res.width, res.height, {minCoveragePct: 0.16, maxRegions: 12});
+      }
+      return res;
+    });
+  }
+
+  async function paintLiveMaskHighlightThumb(canvas, srcDoc, maskDoc, mode = 'auto', colorHex = '#ff3b30', boxSize = 96) {
+    if (!canvas || !maskDoc) return;
+    const [srcDec, mskDec] = await Promise.all([
+      srcDoc ? decodeSmallImage(srcDoc, boxSize * 2, {withColorBlocks: false}) : Promise.resolve(null),
+      decodeSmallImage(maskDoc, boxSize * 2, {withColorBlocks: mode === 'color'}),
+    ]);
+    if (!mskDec || !canvas.isConnected) return;
+    const rivals = mode === 'color' && mskDec.blocks
+      ? mskDec.blocks.map(b => b.rgb).filter(([r, g2, b]) => {
+          const [tr, tg, tb] = hexToRgb(colorHex);
+          return ((r - tr) ** 2 + (g2 - tg) ** 2 + (b - tb) ** 2) > 36 * 36;
+        })
+      : null;
+    const comp = compositeMaskHighlightRgba(
+      srcDec ? srcDec.rgba : null,
+      srcDec ? srcDec.width : 0,
+      srcDec ? srcDec.height : 0,
+      mskDec.rgba,
+      mskDec.width,
+      mskDec.height,
+      {mode, colorHex, rivalColors: rivals}
+    );
+    canvas.width = comp.width;
+    canvas.height = comp.height;
+    const ctx = canvas.getContext('2d');
+    ctx.putImageData(new ImageData(comp.rgba, comp.width, comp.height), 0, 0);
   }
 
   function currentGraph() {
@@ -849,8 +959,12 @@ export function initNodeCanvas(hooks) {
       const p2 = portCenterInWorld(e.toNode, 'in', e.toPort);
       if (!p1 || !p2) continue;
       const fromNode = getNode(g, e.fromNode);
+      const toNode = getNode(g, e.toNode);
       const outSpec = NODE_SPECS[fromNode?.type]?.outputs?.find(o => o.id === e.fromPort);
-      const stroke = KIND_COLORS[outSpec?.kind] || '#60a5fa';
+      let stroke = KIND_COLORS[outSpec?.kind] || '#60a5fa';
+      if (e.toPort === 'mask' && toNode?.params?.maskMode === 'color' && /^#[0-9a-fA-F]{6}$/.test(toNode?.params?.maskColor || '')) {
+        stroke = toNode.params.maskColor;
+      }
       const d = bezierPath(p1.x, p1.y, p2.x, p2.y);
 
       const grp = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -1632,8 +1746,18 @@ export function initNodeCanvas(hooks) {
     validateProject(p);
     await hooks.commit(p, f);
     render();
-    if (previewDlg.open && previewDlg.dataset.nodeId === nodeId && viewKey && viewKey !== '__mask__') {
-      openMultiViewInspector(nodeId, viewKey);
+    if (previewDlg.open && viewKey && viewKey !== '__mask__') {
+      if (previewDlg.dataset.matrixMode === '1') {
+        openMultiViewInspector(nodeId, viewKey, {matrixAll: true});
+      } else if (previewDlg.dataset.nodeId === nodeId) {
+        openMultiViewInspector(nodeId, viewKey, {matrixAll: false});
+      }
+    }
+    if (!viewKey && node.type === 'mask_ref') {
+      const dec = await decodeSmallImage(imgMeta, 256, {withColorBlocks: true});
+      if (dec?.blocks?.length >= 2) {
+        openMultiMaskSplitDialog(node.id);
+      }
     }
   }
 
@@ -1712,44 +1836,21 @@ export function initNodeCanvas(hooks) {
     bgBtn.onclick = () => {
       const bg = bgBtn.dataset.mvBg || 'checker';
       previewDlg.querySelector('#mvSheetGrid').dataset.bg = bg;
+      for (const subGrid of previewDlg.querySelectorAll('#mvMatrixStack .mv-sheet-grid')) {
+        subGrid.dataset.bg = bg;
+      }
       for (const b of previewDlg.querySelectorAll('[data-mv-bg]')) {
         b.classList.toggle('active', b === bgBtn);
       }
     };
   }
 
-  function openMultiViewInspector(nodeId, highlightKey = null) {
-    const g = currentGraph();
-    const node = getNode(g, nodeId);
-    if (!node) return;
+  function buildInspectorRowGrid(g, node, gridEl, {highlightKey = null, activeBg = 'checker'} = {}) {
     const keys = node.type === 'balance_views' ? GRAPH_VIEWS_3 : GRAPH_VIEWS_4;
-    const locked = isNodeLocked(nodeId);
-    const partLabel = node.type === 'balance_views'
-      ? tr('全身合体比例三视图', 'Full-Body Proportion 3-View Sheet')
-      : (node.params?.partName || tr('部件四视图', 'Part 4-View Sheet'));
-
-    previewDlg.dataset.nodeId = nodeId;
-    previewDlg.querySelector('#ngPreviewTitle').textContent = tr(
-      `🔍 多视图同屏展开对比 · ${partLabel}`,
-      `🔍 Side-by-Side Multi-View Inspector · ${partLabel}`
-    );
-    previewDlg.querySelector('#mvShowLaserLabel').textContent = tr(
-      '📏 显示像素上下对齐激光参考线',
-      '📏 Show Top/Bottom Pixel Alignment Laser Lines'
-    );
-    previewDlg.querySelector('#mvBgLabel').textContent = tr('检视底色:', 'Backdrop:');
-    previewDlg.querySelector('#mvFooterTip').textContent = tr(
-      '提示：全部视图已同屏并排展开；可直接将本地图片拖拽到任意视角槽位上进行替换',
-      'Tip: All views are expanded side-by-side; drag & drop an image onto any slot to replace it'
-    );
-    previewDlg.querySelector('#ngClosePreviewBtn').textContent = tr('关闭检视窗', 'Close Inspector');
-
-    const gridEl = previewDlg.querySelector('#mvSheetGrid');
+    const locked = isNodeLocked(node.id);
+    gridEl.dataset.bg = activeBg;
     gridEl.classList.toggle('cols-3', keys.length === 3);
     gridEl.replaceChildren();
-
-    const summaryEl = previewDlg.querySelector('#mvAlignSummary');
-    summaryEl.textContent = tr('正在扫描各视角上下像素边界…', 'Scanning pixel alignment bounds…');
 
     const urlByKey = new Map();
     const cardByKey = new Map();
@@ -1796,7 +1897,7 @@ export function initNodeCanvas(hooks) {
       } else {
         const empty = document.createElement('div');
         empty.className = 'mv-empty-hint';
-        empty.textContent = tr('尚未填入此视角\n点击下方「替换」或直接拖入图片', 'Empty view slot\nClick Replace or drop image here');
+        empty.textContent = tr('尚未填入此视角\n点击下方「上传」或直接拖入图片', 'Empty view slot\nClick Upload or drop image here');
         empty.style.whiteSpace = 'pre-line';
         frame.append(empty);
       }
@@ -1815,7 +1916,7 @@ export function initNodeCanvas(hooks) {
         repBtn.style.cssText = 'height:24px;padding:0 8px;font-size:11px';
         repBtn.textContent = u ? tr('📂 替换', '📂 Replace') : tr('📂 上传', '📂 Upload');
         repBtn.onclick = () => {
-          pendingUploadTarget = {nodeId, viewKey: k};
+          pendingUploadTarget = {nodeId: node.id, viewKey: k};
           previewDlg.querySelector('#ngReplaceViewInput').click();
         };
         btnRow.append(repBtn);
@@ -1846,7 +1947,7 @@ export function initNodeCanvas(hooks) {
           ev.preventDefault();
           card.style.borderColor = highlightKey === k ? '#60a5fa' : '';
           const file = ev.dataTransfer?.files?.[0];
-          if (file) void handleImageUpload(file, nodeId, k);
+          if (file) void handleImageUpload(file, node.id, k);
         };
       }
 
@@ -1854,62 +1955,207 @@ export function initNodeCanvas(hooks) {
       cardByKey.set(k, {card, alignBadge, frame});
     }
 
-    if (!previewDlg.open) previewDlg.showModal();
+    return {keys, urlByKey, cardByKey};
+  }
 
-    // Run async pixel-bounds scan across all loaded views
+  async function scanAndAnnotateRowAlignment(rowSpec, token) {
+    const {keys, urlByKey, cardByKey} = rowSpec;
+    const boundsMap = new Map();
+    for (const [k, u] of urlByKey) {
+      const b = await scanViewAlphaBounds(u);
+      if (b) boundsMap.set(k, b);
+    }
+    if (previewDlg.dataset.scanToken !== token) return null;
+    const refKey = boundsMap.has('front') ? 'front' : [...boundsMap.keys()][0];
+    const refB = refKey ? boundsMap.get(refKey) : null;
+    if (!refB) return {loaded: 0, total: keys.length, maxDiffPx: 0};
+
+    let maxDiffPx = 0;
+    for (const [k, {alignBadge, frame}] of cardByKey) {
+      const lnTop = frame.querySelector('.mv-laser-line.top');
+      const lnMid = frame.querySelector('.mv-laser-line.mid');
+      const lnBot = frame.querySelector('.mv-laser-line.bot');
+      if (lnTop && lnMid && lnBot) {
+        lnTop.style.top = `${refB.topPct.toFixed(2)}%`;
+        lnMid.style.top = `${refB.midPct.toFixed(2)}%`;
+        lnBot.style.top = `${refB.botPct.toFixed(2)}%`;
+        lnTop.hidden = false;
+        lnMid.hidden = false;
+        lnBot.hidden = false;
+      }
+      const curB = boundsMap.get(k);
+      if (!curB) continue;
+      if (k === refKey) {
+        alignBadge.hidden = false;
+        alignBadge.className = 'mv-align-tag ok';
+        alignBadge.textContent = tr(`基准 Y:${curB.topPx}~${curB.botPx}`, `Ref Y:${curB.topPx}~${curB.botPx}`);
+      } else {
+        const dTop = Math.abs(curB.topPx - refB.topPx);
+        const dBot = Math.abs(curB.botPx - refB.botPx);
+        const worst = Math.max(dTop, dBot);
+        if (worst > maxDiffPx) maxDiffPx = worst;
+        alignBadge.hidden = false;
+        if (worst <= 4) {
+          alignBadge.className = 'mv-align-tag ok';
+          alignBadge.textContent = tr(`✓ 对齐 (Δ${worst}px)`, `✓ Aligned (Δ${worst}px)`);
+        } else {
+          alignBadge.className = 'mv-align-tag warn';
+          alignBadge.className = 'mv-align-tag warn';
+          alignBadge.textContent = tr(`⚠ Δ顶${dTop}/底${dBot}px`, `⚠ ΔT${dTop}/B${dBot}px`);
+        }
+      }
+    }
+    return {loaded: boundsMap.size, total: keys.length, maxDiffPx};
+  }
+
+  function openMultiViewInspector(nodeId = null, highlightKey = null, {matrixAll = false} = {}) {
+    const g = currentGraph();
+    const viewNodes = g.nodes.filter(n => n.type === 'part_views' || n.type === 'balance_views');
+    if (!viewNodes.length) {
+      hooks.toast(tr('当前画布没有拆图或三视图节点', 'No view nodes on canvas'));
+      return;
+    }
+    const targetSingle = nodeId ? getNode(g, nodeId) : viewNodes[0];
+    const isMatrix = matrixAll || !targetSingle;
+
+    previewDlg.dataset.nodeId = targetSingle?.id || viewNodes[0].id;
+    previewDlg.dataset.matrixMode = isMatrix ? '1' : '0';
+
+    const singleBtn = previewDlg.querySelector('#mvScopeSingleBtn');
+    const matrixBtn = previewDlg.querySelector('#mvScopeMatrixBtn');
+    singleBtn.textContent = tr('当前部件 (1×4)', 'Single Node (1×4)');
+    matrixBtn.textContent = tr(`📋 全角色所有部件总表 (${viewNodes.length}组)`, `📋 All Parts Matrix (${viewNodes.length} sets)`);
+    singleBtn.classList.toggle('active', !isMatrix);
+    matrixBtn.classList.toggle('active', isMatrix);
+    singleBtn.onclick = () => openMultiViewInspector(previewDlg.dataset.nodeId, null, {matrixAll: false});
+    matrixBtn.onclick = () => openMultiViewInspector(previewDlg.dataset.nodeId, null, {matrixAll: true});
+
+    previewDlg.querySelector('#mvShowLaserLabel').textContent = tr(
+      '📏 显示像素上下对齐激光参考线',
+      '📏 Show Top/Bottom Pixel Alignment Laser Lines'
+    );
+    previewDlg.querySelector('#mvBgLabel').textContent = tr('检视底色:', 'Backdrop:');
+    previewDlg.querySelector('#mvFooterTip').textContent = tr(
+      '提示：可直接将本地图片拖拽到任意视角槽位上进行替换',
+      'Tip: Drag & drop an image onto any view slot to replace it'
+    );
+    previewDlg.querySelector('#ngClosePreviewBtn').textContent = tr('关闭检视窗', 'Close Inspector');
+
+    const gridEl = previewDlg.querySelector('#mvSheetGrid');
+    const stackEl = previewDlg.querySelector('#mvMatrixStack');
+    const activeBg = previewDlg.querySelector('[data-mv-bg].active')?.dataset?.mvBg || 'checker';
+    const summaryEl = previewDlg.querySelector('#mvAlignSummary');
     const token = String(Date.now()) + Math.random();
     previewDlg.dataset.scanToken = token;
+
+    if (!isMatrix) {
+      stackEl.hidden = true;
+      gridEl.hidden = false;
+      const partLabel = targetSingle.type === 'balance_views'
+        ? tr('全身合体比例三视图', 'Full-Body Proportion 3-View Sheet')
+        : (targetSingle.params?.partName || tr('部件四视图', 'Part 4-View Sheet'));
+      previewDlg.querySelector('#ngPreviewTitle').textContent = tr(
+        `🔍 多视图同屏展开对比 · ${partLabel}`,
+        `🔍 Side-by-Side Multi-View Inspector · ${partLabel}`
+      );
+      summaryEl.textContent = tr('正在扫描像素边界…', 'Scanning pixel alignment…');
+      const rowSpec = buildInspectorRowGrid(g, targetSingle, gridEl, {highlightKey, activeBg});
+      if (!previewDlg.open) previewDlg.showModal();
+      void (async () => {
+        const res = await scanAndAnnotateRowAlignment(rowSpec, token);
+        if (!res) return;
+        syncInspectorLaserVisibility();
+        summaryEl.textContent = res.loaded === 0
+          ? tr('上传视图后自动检测头顶与脚底像素对齐度', 'Upload views to inspect top/bottom alignment')
+          : res.maxDiffPx <= 4
+            ? tr(`✓ 已加载 ${res.loaded}/${res.total} 视角 · 像素上下基准线已对齐 (Δ≤${res.maxDiffPx}px)`, `✓ ${res.loaded}/${res.total} views aligned (max Δ${res.maxDiffPx}px)`)
+            : tr(`⚠ 检测到最大高度偏差 ${res.maxDiffPx}px`, `⚠ Max height delta ${res.maxDiffPx}px`);
+      })();
+      return;
+    }
+
+    // N x 4 Matrix Overview across ALL view nodes!
+    gridEl.hidden = true;
+    stackEl.hidden = false;
+    stackEl.replaceChildren();
+    previewDlg.querySelector('#ngPreviewTitle').textContent = tr(
+      `📋 全角色多部件识图总览（共 ${viewNodes.length} 组视图）`,
+      `📋 All-Parts Multi-View Matrix Overview (${viewNodes.length} Node Sets)`
+    );
+    summaryEl.textContent = tr(`正在扫描全角色 ${viewNodes.length} 组视图…`, `Scanning all ${viewNodes.length} view sets…`);
+
+    const srcDoc = g.nodes.find(x => x.type === 'source_image')?.data?.image || null;
+    const rowSpecs = [];
+    for (const vn of viewNodes) {
+      const block = document.createElement('div');
+      block.className = 'mv-matrix-row-block';
+      const rHead = document.createElement('div');
+      rHead.className = 'mv-matrix-row-head';
+
+      const badge = document.createElement('div');
+      badge.className = 'mv-matrix-part-badge';
+
+      // Show color dot + live mini highlight if masked!
+      const mEdge = incomingEdges(g, vn.id).find(e => e.toPort === 'mask');
+      const mNode = mEdge ? getNode(g, mEdge.fromNode) : null;
+      const mDoc = mNode?.data?.image || vn.data?.maskImage || null;
+      if (mDoc) {
+        const miniM = document.createElement('canvas');
+        miniM.width = 34;
+        miniM.height = 34;
+        miniM.style.cssText = 'width:30px;height:30px;border-radius:5px;border:1px solid #38bdf8;background:#090d16';
+        void paintLiveMaskHighlightThumb(miniM, srcDoc, mDoc, vn.params?.maskMode || 'auto', vn.params?.maskColor || '#ff3b30', 48);
+        badge.append(miniM);
+        if (vn.params?.maskMode === 'color' && vn.params?.maskColor) {
+          const sw = document.createElement('span');
+          sw.className = 'ng-mask-chip';
+          sw.innerHTML = `<span class="ng-mask-chip-dot" style="background:${vn.params.maskColor}"></span>${vn.params.maskColor}`;
+          badge.append(sw);
+        }
+      }
+
+      const nameTxt = document.createElement('span');
+      nameTxt.textContent = vn.type === 'balance_views'
+        ? `📐 ${tr('全身合体比例三视图', 'Full-Body 3-View Guide')}`
+        : `✂️ ${vn.params?.partName || vn.id}`;
+      badge.append(nameTxt);
+
+      const focusOneBtn = document.createElement('button');
+      focusOneBtn.type = 'button';
+      focusOneBtn.className = 'ng-btn';
+      focusOneBtn.style.cssText = 'height:24px;padding:0 8px;font-size:11px';
+      focusOneBtn.textContent = tr('仅看此部件', 'Focus Node');
+      focusOneBtn.onclick = () => openMultiViewInspector(vn.id, null, {matrixAll: false});
+
+      rHead.append(badge, focusOneBtn);
+      const subGrid = document.createElement('div');
+      subGrid.className = 'mv-sheet-grid';
+      const spec = buildInspectorRowGrid(g, vn, subGrid, {
+        highlightKey: vn.id === nodeId ? highlightKey : null,
+        activeBg,
+      });
+      block.append(rHead, subGrid);
+      stackEl.append(block);
+      rowSpecs.push(spec);
+    }
+
+    if (!previewDlg.open) previewDlg.showModal();
     void (async () => {
-      const boundsMap = new Map();
-      for (const [k, u] of urlByKey) {
-        const b = await scanViewAlphaBounds(u);
-        if (b) boundsMap.set(k, b);
-      }
-      if (previewDlg.dataset.scanToken !== token) return;
-      const refKey = boundsMap.has('front') ? 'front' : [...boundsMap.keys()][0];
-      const refB = refKey ? boundsMap.get(refKey) : null;
-      if (!refB) {
-        summaryEl.textContent = tr('上传视图后自动检测头顶与脚底像素水平对齐度', 'Upload views to inspect top/bottom pixel alignment');
-        return;
-      }
-      let maxDiffPx = 0;
-      for (const [k, {alignBadge, frame}] of cardByKey) {
-        const lnTop = frame.querySelector('.mv-laser-line.top');
-        const lnMid = frame.querySelector('.mv-laser-line.mid');
-        const lnBot = frame.querySelector('.mv-laser-line.bot');
-        if (lnTop && lnMid && lnBot) {
-          lnTop.style.top = `${refB.topPct.toFixed(2)}%`;
-          lnMid.style.top = `${refB.midPct.toFixed(2)}%`;
-          lnBot.style.top = `${refB.botPct.toFixed(2)}%`;
-          lnTop.hidden = false;
-          lnMid.hidden = false;
-          lnBot.hidden = false;
-        }
-        const curB = boundsMap.get(k);
-        if (!curB) continue;
-        if (k === refKey) {
-          alignBadge.hidden = false;
-          alignBadge.className = 'mv-align-tag ok';
-          alignBadge.textContent = tr(`基准 Y:${curB.topPx}~${curB.botPx}`, `Ref Y:${curB.topPx}~${curB.botPx}`);
-        } else {
-          const dTop = Math.abs(curB.topPx - refB.topPx);
-          const dBot = Math.abs(curB.botPx - refB.botPx);
-          const worst = Math.max(dTop, dBot);
-          if (worst > maxDiffPx) maxDiffPx = worst;
-          alignBadge.hidden = false;
-          if (worst <= 4) {
-            alignBadge.className = 'mv-align-tag ok';
-            alignBadge.textContent = tr(`✓ 对齐 (Δ${worst}px)`, `✓ Aligned (Δ${worst}px)`);
-          } else {
-            alignBadge.className = 'mv-align-tag warn';
-            alignBadge.textContent = tr(`⚠ Δ顶${dTop}/底${dBot}px`, `⚠ ΔT${dTop}/B${dBot}px`);
-          }
-        }
+      let totalLoaded = 0;
+      let totalSlots = 0;
+      let worstPx = 0;
+      for (const sp of rowSpecs) {
+        const r = await scanAndAnnotateRowAlignment(sp, token);
+        if (!r) return;
+        totalLoaded += r.loaded;
+        totalSlots += r.total;
+        if (r.maxDiffPx > worstPx) worstPx = r.maxDiffPx;
       }
       syncInspectorLaserVisibility();
-      summaryEl.textContent = maxDiffPx <= 4
-        ? tr(`✓ 已加载 ${boundsMap.size}/${keys.length} 视角 · 上下轮廓线已严格对齐 (最大误差 ${maxDiffPx}px)`, `✓ ${boundsMap.size}/${keys.length} views · Pixel aligned (max Δ${maxDiffPx}px)`)
-        : tr(`⚠ 检测到部分视角上下高度存在 ${maxDiffPx}px 偏差（导入时 align_views.py 可自动等比对齐）`, `⚠ Max height delta ${maxDiffPx}px across views`);
+      summaryEl.textContent = tr(
+        `✓ 共展开 ${viewNodes.length} 组部件（已就绪 ${totalLoaded}/${totalSlots} 张视图${totalLoaded ? ` · 最大对齐偏差 ${worstPx}px` : ''}）`,
+        `✓ Expanded ${viewNodes.length} sets (${totalLoaded}/${totalSlots} views loaded)`
+      );
     })();
   }
 
@@ -2182,6 +2428,269 @@ export function initNodeCanvas(hooks) {
     if (!propStudioDlg.open) propStudioDlg.showModal();
   }
 
+  // --- Multi-Color ID Mask Auto-Split & Part Naming Studio ---
+  function parseMaskNoteLegend(noteStr) {
+    const map = new Map();
+    if (!noteStr) return map;
+    for (const seg of String(noteStr).split(/[,，;；\n|]+/)) {
+      const m = seg.trim().match(/^([^=:：]+)[=:：]\s*(.+)$/);
+      if (m) map.set(m[1].trim().toLowerCase(), m[2].trim());
+    }
+    return map;
+  }
+
+  async function openMultiMaskSplitDialog(maskNodeId) {
+    const g = currentGraph();
+    const maskNode = getNode(g, maskNodeId);
+    const maskDoc = maskNode?.data?.image;
+    if (!maskNode || !maskDoc) {
+      hooks.toast(tr('请先在此 Mask 节点上传多色遮罩图', 'Upload a Mask image onto this node first'));
+      return;
+    }
+    const dec = await decodeSmallImage(maskDoc, 280, {withColorBlocks: true});
+    if (!dec?.blocks?.length) {
+      hooks.toast(tr('未在遮罩图中检测到有效前景颜色区域', 'No valid foreground color regions detected in mask'));
+      return;
+    }
+
+    const srcDoc = g.nodes.find(n => n.type === 'source_image')?.data?.image || null;
+    const legendMap = parseMaskNoteLegend(maskNode.params?.note || '');
+
+    const rowsState = dec.blocks.map((blk, idx) => {
+      const shortZh = blk.colorNameZh.replace(/色$/, '');
+      const fromLegend =
+        legendMap.get(blk.hex.toLowerCase()) ||
+        legendMap.get(blk.colorNameZh.toLowerCase()) ||
+        legendMap.get(shortZh) ||
+        legendMap.get(blk.colorNameEn.toLowerCase()) ||
+        '';
+      const partName = fromLegend || tr(blk.suggestedPartNameZh, blk.suggestedPartNameEn);
+      const isLowerOrBody = blk.centerY > 0.36 && blk.coveragePct > 6;
+      return {
+        enabled: true,
+        hex: blk.hex,
+        coveragePct: blk.coveragePct,
+        partName,
+        pose: isLowerOrBody ? 't' : 'natural',
+        quality: 'high',
+      };
+    });
+
+    multiMaskDlg.querySelector('#mmSplitTitle').textContent = tr(
+      `🪄 多色块 Mask 自动识别与一键建分支（已识别 ${rowsState.length} 个色块）`,
+      `🪄 Multi-Color ID Mask Auto-Split (${rowsState.length} Regions Detected)`
+    );
+    multiMaskDlg.querySelector('#mmSplitDesc').textContent = tr(
+      '已自动过滤边缘抗锯齿过渡色并按从上到下顺序提取色块（左侧实时预览该色块对应原画的高亮区域）。确认部件名称后一键生成全套「拆图 + Tripo 3D」分支：',
+      'Anti-aliased fringes filtered; regions ordered top-to-bottom with live concept-art highlight previews. Name each part and generate all branches in one click:'
+    );
+    multiMaskDlg.querySelector('#mmPickExtraBtn').textContent = tr('💧 图上手动吸取补充微小色块…', '💧 Pick Extra Small Color Region...');
+    multiMaskDlg.querySelector('#mmReplaceEmptyLbl').textContent = tr(
+      '自动清理画布原有的空白未生成拆件节点（推荐）',
+      'Clean up unused empty placeholder part nodes on canvas'
+    );
+    multiMaskDlg.querySelector('#mmCancelBtn').textContent = tr('取消', 'Cancel');
+
+    const listEl = multiMaskDlg.querySelector('#mmRegionList');
+    const confirmBtn = multiMaskDlg.querySelector('#mmConfirmGenerateBtn');
+
+    const updateConfirmBtnText = () => {
+      const activeCnt = rowsState.filter(r => r.enabled).length;
+      confirmBtn.disabled = activeCnt === 0;
+      confirmBtn.textContent = tr(
+        `✨ 一键生成 ${activeCnt} 组「拆件 + Tripo 建模」分支`,
+        `✨ Generate ${activeCnt} Part + Tripo 3D Branches`
+      );
+    };
+
+    const renderRows = () => {
+      listEl.replaceChildren();
+      rowsState.forEach((st, idx) => {
+        const row = document.createElement('div');
+        row.className = 'mm-region-row';
+        row.dataset.off = st.enabled ? '0' : '1';
+
+        const chk = document.createElement('input');
+        chk.type = 'checkbox';
+        chk.checked = st.enabled;
+        chk.onchange = () => {
+          st.enabled = chk.checked;
+          row.dataset.off = st.enabled ? '0' : '1';
+          updateConfirmBtnText();
+        };
+
+        const cvs = document.createElement('canvas');
+        cvs.className = 'mm-region-thumb';
+        cvs.width = 96;
+        cvs.height = 96;
+        void paintLiveMaskHighlightThumb(cvs, srcDoc, maskDoc, 'color', st.hex, 96);
+
+        const swCol = document.createElement('div');
+        swCol.style.cssText = 'display:flex;flex-direction:column;gap:3px;align-items:flex-start';
+        const cInp = document.createElement('input');
+        cInp.type = 'color';
+        cInp.value = st.hex;
+        cInp.style.cssText = 'width:44px;height:24px;padding:0;border:1px solid #475569;border-radius:5px;background:transparent;cursor:pointer';
+        cInp.onchange = () => {
+          st.hex = cInp.value;
+          hexSpan.textContent = st.hex;
+          void paintLiveMaskHighlightThumb(cvs, srcDoc, maskDoc, 'color', st.hex, 96);
+        };
+        const hexSpan = document.createElement('span');
+        hexSpan.style.cssText = 'font-size:10px;color:#94a3b8;font-family:monospace';
+        hexSpan.textContent = st.coveragePct ? `${st.hex} (${st.coveragePct}%)` : st.hex;
+        swCol.append(cInp, hexSpan);
+
+        const nameInp = document.createElement('input');
+        nameInp.type = 'text';
+        nameInp.className = 'ng-input';
+        nameInp.value = st.partName;
+        nameInp.placeholder = tr('输入部件名称，如：双马尾 / 外套 / 百褶裙', 'Part name, e.g. Hair / Coat / Skirt');
+        nameInp.oninput = () => { st.partName = nameInp.value; };
+
+        const poseSel = document.createElement('select');
+        poseSel.className = 'ng-select';
+        poseSel.style.cssText = 'width:100%;font-size:11px;height:28px';
+        poseSel.innerHTML = `
+          <option value="natural">${tr('自然端正姿态', 'Natural Upright')}</option>
+          <option value="t">T-Pose</option>
+          <option value="a">A-Pose</option>
+        `;
+        poseSel.value = st.pose;
+        poseSel.onchange = () => { st.pose = poseSel.value; };
+
+        const qSel = document.createElement('select');
+        qSel.className = 'ng-select';
+        qSel.style.cssText = 'width:100%;font-size:11px;height:28px';
+        qSel.innerHTML = `
+          <option value="high">${tr('HD 高精百万面', 'HD High-Poly')}</option>
+          <option value="smart">${tr('Smart 智能低模+UV', 'Smart Quad + UV')}</option>
+        `;
+        qSel.value = st.quality;
+        qSel.onchange = () => { st.quality = qSel.value; };
+
+        row.append(chk, cvs, swCol, nameInp, poseSel, qSel);
+        listEl.append(row);
+      });
+      updateConfirmBtnText();
+    };
+
+    multiMaskDlg.querySelector('#mmPickExtraBtn').onclick = () => {
+      openMaskColorPicker(fileUrl(maskDoc), pickedHex => {
+        const [r, g2, b] = hexToRgb(pickedHex);
+        const cname = friendlyColorName(r, g2, b, isEn());
+        rowsState.push({
+          enabled: true,
+          hex: pickedHex,
+          coveragePct: 0,
+          partName: tr(`${cname}补充部件 ${rowsState.length + 1}`, `${cname} Extra Part ${rowsState.length + 1}`),
+          pose: 'natural',
+          quality: 'high',
+        });
+        renderRows();
+      });
+    };
+
+    const closeMm = () => multiMaskDlg.close();
+    multiMaskDlg.querySelector('#mmSplitCloseX').onclick = closeMm;
+    multiMaskDlg.querySelector('#mmCancelBtn').onclick = closeMm;
+
+    confirmBtn.onclick = async () => {
+      const chosen = rowsState.filter(r => r.enabled);
+      if (!chosen.length) return;
+      const cleanEmpty = Boolean(multiMaskDlg.querySelector('#mmReplaceEmptyChk')?.checked);
+
+      pushUndo();
+      const {project: curP, files: curF} = hooks.get();
+      const p = structuredClone(curP);
+      const f = new Map(curF);
+      const pg = ensureNodeGraph(p);
+
+      if (cleanEmpty) {
+        const emptyPartIds = pg.nodes
+          .filter(n => n.type === 'part_views' && !isNodeLocked(n.id) && !Object.values(n.data?.views || {}).some(Boolean))
+          .map(n => n.id);
+        for (const pid of emptyPartIds) {
+          const downMeshes = pg.edges
+            .filter(e => e.fromNode === pid && e.fromPort === 'views')
+            .map(e => getNode(pg, e.toNode))
+            .filter(mn => mn && mn.type === 'tripo_mesh' && !isNodeLocked(mn.id) && !(mn.data?.candidates?.length));
+          for (const mn of downMeshes) removeNode(pg, p, mn.id);
+          removeNode(pg, p, pid);
+        }
+      }
+
+      const srcN = pg.nodes.find(n => n.type === 'source_image');
+      const mskN = getNode(pg, maskNodeId);
+      const styN = pg.nodes.find(n => n.type === 'style_ref');
+      const asmN = pg.nodes.find(n => n.type === 'assembly_export');
+
+      const existingPartYs = pg.nodes.filter(n => n.type === 'part_views').map(n => n.y);
+      const startY = existingPartYs.length ? Math.max(...existingPartYs) + 300 : 60;
+      const rowGap = 295;
+
+      chosen.forEach((item, i) => {
+        const pName = (item.partName || '').trim() || `Mask部件 ${i + 1}`;
+        const y = startY + i * rowGap;
+        const pv = createNode('part_views', 430, y, {
+          partName: pName,
+          promptHint: tr(
+            `严格仅提取多色 Mask 中 ${item.hex} 色块覆盖的独立部件，去除外围其余部位遮挡并补全背面闭环结构`,
+            `Strictly extract ONLY the component marked by color ${item.hex} in the ID Mask and reconstruct occluded back surfaces`
+          ),
+          pose: item.pose || 'natural',
+          resolution: 1024,
+          maskMode: 'color',
+          maskColor: item.hex,
+        });
+        const isSmart = item.quality === 'smart';
+        const tm = createNode('tripo_mesh', 810, y, {
+          title: `Tripo · ${pName}`,
+          quality: isSmart ? 'smart' : 'high',
+          aiModel: isSmart ? 'P2.0' : 'H3.5',
+          smartUv: true,
+          autoRetexture: true,
+          polyFaces: isSmart ? 20000 : 2000000,
+          textureSize: 4096,
+          removeLighting: true,
+        });
+        pg.nodes.push(pv, tm);
+        if (srcN) try { connectPorts(pg, srcN.id, 'image', pv.id, 'source'); } catch {}
+        if (mskN) try { connectPorts(pg, mskN.id, 'mask', pv.id, 'mask'); } catch {}
+        if (styN) try { connectPorts(pg, styN.id, 'style', pv.id, 'style'); } catch {}
+        try { connectPorts(pg, pv.id, 'views', tm.id, 'views'); } catch {}
+        if (asmN) try { connectPorts(pg, tm.id, 'mesh', asmN.id, 'meshes'); } catch {}
+      });
+
+      // Position balance_views nicely below all part_views & center assembly_export
+      const balN = pg.nodes.find(n => n.type === 'balance_views');
+      const allPartYs = pg.nodes.filter(n => n.type === 'part_views').map(n => n.y);
+      if (allPartYs.length) {
+        const maxPy = Math.max(...allPartYs);
+        if (balN && balN.y <= maxPy + 180) balN.y = maxPy + rowGap;
+        if (asmN) asmN.y = Math.round((Math.min(...allPartYs) + maxPy) * 0.5);
+      }
+
+      // Also record helpful legend summary into maskNode.params.note if empty
+      if (mskN && !(mskN.params?.note || '').trim().includes('=')) {
+        mskN.params.note = chosen.map(c => `${c.hex}=${(c.partName || '').trim()}`).join(', ');
+      }
+
+      validateProject(p);
+      await hooks.commit(p, f);
+      closeMm();
+      render();
+      fitCanvas(false);
+      hooks.toast(tr(
+        `✓ 已按多色 Mask 自动生成 ${chosen.length} 组彩色连线拆件 + Tripo 建模分支！`,
+        `✓ Auto-generated ${chosen.length} color-coded Mask split + Tripo 3D branches!`
+      ));
+    };
+
+    renderRows();
+    if (!multiMaskDlg.open) multiMaskDlg.showModal();
+  }
+
   function buildNodeBody(g, node) {
     const body = document.createElement('div');
     body.className = 'ng-body';
@@ -2239,6 +2748,42 @@ export function initNodeCanvas(hooks) {
         noteField.append(inp);
         body.append(noteField);
       }
+
+      if (node.type === 'mask_ref' && node.data?.image) {
+        const swatchWrap = document.createElement('div');
+        swatchWrap.className = 'ng-mask-swatches';
+        swatchWrap.textContent = tr('正在扫描色块分区…', 'Scanning color regions…');
+
+        const splitBtn = document.createElement('button');
+        splitBtn.type = 'button';
+        splitBtn.className = 'ng-btn primary';
+        splitBtn.style.justifyContent = 'center';
+        splitBtn.textContent = tr('🪄 按色块一键生成拆件分支…', '🪄 Auto-Split Color Regions...');
+        splitBtn.onclick = () => void openMultiMaskSplitDialog(node.id);
+
+        body.append(swatchWrap, splitBtn);
+
+        void decodeSmallImage(node.data.image, 260, {withColorBlocks: true}).then(dec => {
+          if (!swatchWrap.isConnected) return;
+          const blocks = dec?.blocks || [];
+          swatchWrap.replaceChildren();
+          if (!blocks.length) {
+            swatchWrap.textContent = tr('未检测到前景遮罩色块', 'No foreground mask regions detected');
+            return;
+          }
+          for (const blk of blocks) {
+            const chip = document.createElement('span');
+            chip.className = 'ng-mask-chip';
+            chip.title = `${blk.hex} · ${blk.coveragePct}%`;
+            chip.innerHTML = `<span class="ng-mask-chip-dot" style="background:${blk.hex}"></span>${tr(blk.colorNameZh, blk.colorNameEn)} ${blk.coveragePct}%`;
+            swatchWrap.append(chip);
+          }
+          splitBtn.textContent = tr(
+            `🪄 按 ${blocks.length} 个色块一键生成拆件分支`,
+            `🪄 Auto-Generate ${blocks.length} Color Branches`
+          );
+        });
+      }
       return body;
     }
 
@@ -2265,25 +2810,42 @@ export function initNodeCanvas(hooks) {
         body.append(nameField);
 
         // Mask-Driven Part Extraction Control (supports upstream `mask_ref` wire OR inline Mask upload!)
+        const srcEdgeForMask = incomingEdges(g, node.id).find(e => e.toPort === 'source');
+        const srcDocForMask = srcEdgeForMask ? getNode(g, srcEdgeForMask.fromNode)?.data?.image : null;
         const maskEdge = incomingEdges(g, node.id).find(e => e.toPort === 'mask');
         const maskSrcNode = maskEdge ? getNode(g, maskEdge.fromNode) : null;
         const activeMaskDoc = maskSrcNode?.data?.image || node.data?.maskImage || null;
         const activeMaskUrl = fileUrl(activeMaskDoc);
 
         const maskBox = document.createElement('div');
-        maskBox.className = 'ng-mask-box';
+        maskBox.className = 'ng-mask-box' + (activeMaskDoc ? ' active' : '');
+        if (activeMaskDoc && node.params?.maskMode === 'color' && /^#[0-9a-fA-F]{6}$/.test(node.params?.maskColor || '')) {
+          maskBox.style.borderColor = node.params.maskColor;
+        }
         const maskHead = document.createElement('div');
         maskHead.className = 'ng-mask-row';
 
-        const thumb = document.createElement('div');
-        thumb.className = 'ng-mask-thumb';
-        if (activeMaskUrl) {
-          const mImg = document.createElement('img');
-          mImg.src = activeMaskUrl;
-          mImg.alt = 'Mask';
-          thumb.append(mImg);
+        let thumbEl;
+        if (activeMaskDoc) {
+          const liveCvs = document.createElement('canvas');
+          liveCvs.className = 'ng-mask-live-thumb';
+          liveCvs.width = 72;
+          liveCvs.height = 72;
+          liveCvs.title = tr('实时预览：主立绘压暗 + 仅高亮当前节点负责的遮罩区域', 'Live isolated highlight preview for this node');
+          void paintLiveMaskHighlightThumb(
+            liveCvs,
+            srcDocForMask,
+            activeMaskDoc,
+            node.params?.maskMode || 'auto',
+            node.params?.maskColor || '#ff3b30',
+            72
+          );
+          thumbEl = liveCvs;
         } else {
+          const thumb = document.createElement('div');
+          thumb.className = 'ng-mask-thumb';
           thumb.textContent = '🎭';
+          thumbEl = thumb;
         }
 
         const metaCol = document.createElement('div');
@@ -2291,17 +2853,19 @@ export function initNodeCanvas(hooks) {
         const mTitle = document.createElement('span');
         mTitle.style.cssText = 'font-size:11px;font-weight:700;color:#fda4af';
         mTitle.textContent = maskSrcNode
-          ? tr('🎭 已连入上游 Mask 遮罩图', '🎭 Linked Upstream Mask')
+          ? (node.params?.maskMode === 'color'
+              ? tr(`🎭 多色分区 · ${node.params.maskColor || ''}`, `🎭 Color Mask · ${node.params.maskColor || ''}`)
+              : tr('🎭 已连入上游 Mask 遮罩图', '🎭 Linked Upstream Mask'))
           : node.data?.maskImage
             ? tr('🎭 已挂载本节点专属 Mask 图', '🎭 Inline Part Mask Attached')
             : tr('🎭 Mask 遮罩拆件（可选 · 点击或拖入）', '🎭 Part Mask (Optional · Click/Drop)');
         const mSub = document.createElement('span');
         mSub.style.cssText = 'font-size:10px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
         mSub.textContent = activeMaskDoc
-          ? `${activeMaskDoc.filename || 'mask.png'} (${activeMaskDoc.width || '?'}×${activeMaskDoc.height || '?'})`
+          ? tr('左侧已实时预览本节点扣出的高亮部位', 'Live target-part highlight preview active')
           : tr('提供黑白遮罩或多色 ID 图，自动合成高亮边界引导拆件', 'Upload B/W, alpha, or ID mask for exact boundary split');
         metaCol.append(mTitle, mSub);
-        maskHead.append(thumb, metaCol);
+        maskHead.append(thumbEl, metaCol);
 
         if (!maskSrcNode && node.data?.maskImage && !isNodeLocked(node.id)) {
           const clrBtn = document.createElement('button');
@@ -2375,7 +2939,7 @@ export function initNodeCanvas(hooks) {
             colInp.onchange = () => {
               node.params.maskColor = colInp.value;
               hooks.changed();
-              updateStatusesOnly();
+              render();
             };
             const pickBtn = document.createElement('button');
             pickBtn.type = 'button';
@@ -3766,6 +4330,7 @@ export function initNodeCanvas(hooks) {
   $('#ngRedoBtn').onclick = redo;
   $('#ngDeleteSelected').onclick = () => deleteNodesByIds([...selectedNodeIds]);
   $('#ngFitCanvas').onclick = () => fitCanvas(selectedNodeIds.size > 0);
+  $('#ngInspectAllViewsBtn').onclick = () => openMultiViewInspector(null, null, {matrixAll: true});
   $('#ngRequestViews').onclick = () => hooks.requestGraphViews(null);
   $('#ngExecViewPrompt').onclick = () => hooks.session?.()?.reopenPromptDialog?.();
   $('#ngExecCancel').onclick = () => hooks.session?.()?.cancelActiveRequest?.();

@@ -12,6 +12,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {findBundledPython} from '../server-blender.mjs';
 import {renderProportionMannequinRgba} from '../public/proportion-mannequin.mjs';
+import {compositeMaskHighlightRgba} from '../public/mask-color-analyzer.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PREPARE_GUIDES_PY = path.join(__dirname, 'prepare_guides.py');
@@ -295,95 +296,16 @@ function parseHexRgbJs(hex) {
 }
 
 export function renderPureJsMaskOverlayPng(srcDecoded, mskDecoded, mode = 'auto', colorHex = '#ff3b30') {
-  const {width: w, height: h, rgba: srcPx} = srcDecoded;
-  const {width: mw, height: mh, rgba: mskRaw} = mskDecoded;
-  const n = w * h;
-
-  // Nearest-neighbor resample mask if dimensions differ
-  const mskPx = (mw === w && mh === h) ? mskRaw : (() => {
-    const out = new Uint8Array(n * 4);
-    for (let y = 0; y < h; y++) {
-      const sy = Math.min(mh - 1, Math.floor((y * mh) / h));
-      for (let x = 0; x < w; x++) {
-        const sx = Math.min(mw - 1, Math.floor((x * mw) / w));
-        const si = (sy * mw + sx) * 4;
-        const di = (y * w + x) * 4;
-        out[di] = mskRaw[si]; out[di + 1] = mskRaw[si + 1]; out[di + 2] = mskRaw[si + 2]; out[di + 3] = mskRaw[si + 3];
-      }
-    }
-    return out;
-  })();
-
-  let effMode = (mode || 'auto').toLowerCase();
-  if (effMode === 'auto') {
-    let trans = 0;
-    let opaq = 0;
-    let sat = 0;
-    for (let i = 0; i < n; i += 16) {
-      const o = i * 4;
-      const r = mskPx[o]; const g = mskPx[o + 1]; const b = mskPx[o + 2]; const a = mskPx[o + 3];
-      if (a < 128) trans++; else opaq++;
-      if (a >= 64 && (Math.max(r, g, b) - Math.min(r, g, b)) > 45) sat++;
-    }
-    const tot = Math.max(1, trans + opaq);
-    if (trans > 0 && opaq / tot >= 0.03 && opaq / tot <= 0.94) effMode = 'alpha';
-    else if (sat / tot > 0.04) effMode = 'painted';
-    else effMode = 'white';
-  }
-
-  const fg = new Uint8Array(n);
-  const [tr, tg, tb] = parseHexRgbJs(colorHex);
-  const tolSq = 68 * 68;
-  for (let i = 0; i < n; i++) {
-    const o = i * 4;
-    const r = mskPx[o]; const g = mskPx[o + 1]; const b = mskPx[o + 2]; const a = mskPx[o + 3];
-    if (effMode === 'alpha') {
-      if (a >= 96) fg[i] = 1;
-    } else if (effMode === 'color') {
-      if (a >= 48 && ((r - tr) ** 2 + (g - tg) ** 2 + (b - tb) ** 2) <= tolSq) fg[i] = 1;
-    } else if (effMode === 'painted') {
-      if (a >= 64 && (Math.max(r, g, b) - Math.min(r, g, b)) > 40) fg[i] = 1;
-    } else {
-      if (a >= 64 && (r + g + b) >= 360) fg[i] = 1;
-    }
-  }
-
-  const out = new Uint8Array(n * 4);
-  const rad = Math.max(2, Math.min(4, Math.round(Math.max(w, h) / 360)));
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      const o = i * 4;
-      const af = srcPx[o + 3] / 255;
-      const r = Math.round(srcPx[o] * af + 24 * (1 - af));
-      const g = Math.round(srcPx[o + 1] * af + 28 * (1 - af));
-      const b = Math.round(srcPx[o + 2] * af + 38 * (1 - af));
-
-      if (fg[i]) {
-        let edge = false;
-        for (const dy of [-rad, 0, rad]) {
-          const ny = y + dy;
-          if (ny < 0 || ny >= h) { edge = true; break; }
-          for (const dx of [-rad, 0, rad]) {
-            const nx = x + dx;
-            if (nx < 0 || nx >= w || !fg[ny * w + nx]) { edge = true; break; }
-          }
-          if (edge) break;
-        }
-        if (edge) {
-          out[o] = 0; out[o + 1] = 240; out[o + 2] = 255; out[o + 3] = 255;
-        } else {
-          out[o] = r; out[o + 1] = g; out[o + 2] = b; out[o + 3] = 255;
-        }
-      } else {
-        out[o] = Math.round(r * 0.20 + 10);
-        out[o + 1] = Math.round(g * 0.20 + 14);
-        out[o + 2] = Math.round(b * 0.22 + 22);
-        out[o + 3] = 255;
-      }
-    }
-  }
-  return encodeRgbaPng(w, h, out);
+  const comp = compositeMaskHighlightRgba(
+    srcDecoded.rgba,
+    srcDecoded.width,
+    srcDecoded.height,
+    mskDecoded.rgba,
+    mskDecoded.width,
+    mskDecoded.height,
+    {mode, colorHex}
+  );
+  return encodeRgbaPng(comp.width, comp.height, new Uint8Array(comp.rgba.buffer, comp.rgba.byteOffset, comp.rgba.byteLength));
 }
 
 export async function generateRatioRulerGuide({spec = null, ratio = 6.8, size = 1024, pose = 't', outPath}) {

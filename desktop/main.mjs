@@ -998,12 +998,16 @@ app.whenReady().then(async () => {
         expandBtn?.click();
         const dlg = document.getElementById('ngImagePreviewDialog');
         const slotCount = dlg ? dlg.querySelectorAll('#mvSheetGrid .mv-slot-card').length : 0;
+        // Also test N x 4 All-Parts Matrix Overview button
+        document.getElementById('ngInspectAllViewsBtn')?.click();
+        const matrixRows = dlg ? dlg.querySelectorAll('#mvMatrixStack .mv-matrix-row-block').length : 0;
         if (dlg?.open) dlg.close();
-        return { hasMaskNode, multiViewSlotCount: slotCount };
+        return { hasMaskNode, multiViewSlotCount: slotCount, matrixRowCount: matrixRows };
       })()`);
       wbCheck.parametricRatioReady = v22Check;
       wbCheck.hasMaskNode = inspectorCheck.hasMaskNode;
       wbCheck.multiViewSlotCount = inspectorCheck.multiViewSlotCount;
+      wbCheck.matrixRowCount = inspectorCheck.matrixRowCount;
       const sessRes = await fetch(`${workbenchSrv.url}/api/session`, { headers: { host: new URL(workbenchSrv.url).host } });
       const sessJson = await sessRes.json();
       const smokeResult = {
@@ -1027,7 +1031,8 @@ app.whenReady().then(async () => {
         !wbCheck.smartUvRetexRendered ||
         !wbCheck.parametricRatioReady ||
         !wbCheck.hasMaskNode ||
-        wbCheck.multiViewSlotCount !== 4
+        wbCheck.multiViewSlotCount !== 4 ||
+        wbCheck.matrixRowCount < 2
       ) {
         throw new Error('Workbench UI layout, node-creation, template-switch, Mask, or 4-up inspector check failed: ' + JSON.stringify(wbCheck));
       }

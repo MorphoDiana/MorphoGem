@@ -13,6 +13,7 @@ import { registerGraphDocument, createNode, connectPorts, nodeStatus, defaultHei
 import { buildNodeGraphViewsPrompt, computeLockedNodesForViews } from '../public/node-graph-prompts.mjs';
 import { SUPPORTED_LOCALES } from '../public/i18n.mjs';
 import { encodeRgbaPng } from '../scripts/mask-and-ratio-guides.mjs';
+import { analyzeMaskColorBlocks } from '../public/mask-color-analyzer.mjs';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -93,22 +94,46 @@ async function testMgemArchiveAndBilingualPrompts() {
   assert.ok(defaultHeightForPartName('无发裸脸', 2.5, 1.5) > 0.55, '2.5H chibi head should be ~0.60m on 1.5m character');
   assert.ok(defaultHeightForPartName('服装身体', 2.5, 1.5) < 1.05, '2.5H chibi headless body should be compact (<1.05m)');
 
-  const maskRgba = new Uint8Array(4 * 4 * 4);
-  for (let i = 0; i < 16; i++) {
-    const isCenter = i === 5 || i === 6 || i === 9 || i === 10;
-    maskRgba[i * 4] = isCenter ? 255 : 0;
-    maskRgba[i * 4 + 1] = isCenter ? 255 : 0;
-    maskRgba[i * 4 + 2] = isCenter ? 255 : 0;
-    maskRgba[i * 4 + 3] = 255;
+  // Build a realistic 32x32 3-Color ID Mask (Red top, Blue middle, Green bottom + anti-aliased transition row) over black bg
+  const mw = 32;
+  const mh = 32;
+  const maskRgba = new Uint8Array(mw * mh * 4);
+  for (let y = 0; y < mh; y++) {
+    for (let x = 0; x < mw; x++) {
+      const o = (y * mw + x) * 4;
+      maskRgba[o + 3] = 255;
+      if (x < 4 || x >= 28 || y < 2 || y >= 30) continue; // black border background
+      if (y < 10) {
+        maskRgba[o] = 255; maskRgba[o + 1] = 59; maskRgba[o + 2] = 48; // Red (#ff3b30)
+      } else if (y === 10) {
+        maskRgba[o] = 128; maskRgba[o + 1] = 90; maskRgba[o + 2] = 150; // 1px anti-aliased fringe (must be rejected!)
+      } else if (y < 20) {
+        maskRgba[o] = 0; maskRgba[o + 1] = 122; maskRgba[o + 2] = 255; // Blue (#007aff)
+      } else {
+        maskRgba[o] = 52; maskRgba[o + 1] = 199; maskRgba[o + 2] = 89; // Green (#34c759)
+      }
+    }
   }
-  const maskPng = encodeRgbaPng(4, 4, maskRgba);
-  const maskNode = createNode('mask_ref', 60, 380, { note: '白色=披肩外套' });
-  const maskDoc = await registerGraphDocument(proj, files, 'cape_mask.png', new Uint8Array(maskPng), 'mask_ref');
-  maskNode.data.image = { ...maskDoc, mime: 'image/png', width: 4, height: 4 };
+  const detectedBlocks = analyzeMaskColorBlocks(maskRgba, mw, mh);
+  assert.equal(detectedBlocks.length, 3, 'Should detect exact 3 flat color blocks and reject AA transition row & black bg');
+  assert.equal(detectedBlocks[0].hex, '#ff3b30');
+  assert.equal(detectedBlocks[1].hex, '#007aff');
+  assert.equal(detectedBlocks[2].hex, '#34c759');
+
+  const maskPng = encodeRgbaPng(mw, mh, maskRgba);
+  const maskNode = createNode('mask_ref', 60, 380, { note: '红=双马尾, 蓝=外套, 绿=百褶裙' });
+  const maskDoc = await registerGraphDocument(proj, files, 'multi_id_mask.png', new Uint8Array(maskPng), 'mask_ref');
+  maskNode.data.image = { ...maskDoc, mime: 'image/png', width: mw, height: mh };
   proj.nodeGraph.nodes.push(maskNode);
-  const firstPartNode = proj.nodeGraph.nodes.find(n => n.type === 'part_views');
-  firstPartNode.params.maskMode = 'white';
+  const partNodes = proj.nodeGraph.nodes.filter(n => n.type === 'part_views');
+  const firstPartNode = partNodes[0];
+  const secondPartNode = partNodes[1];
+  firstPartNode.params.maskMode = 'color';
+  firstPartNode.params.maskColor = '#ff3b30';
+  secondPartNode.params.maskMode = 'color';
+  secondPartNode.params.maskColor = '#007aff';
   connectPorts(proj.nodeGraph, maskNode.id, 'mask', firstPartNode.id, 'mask');
+  connectPorts(proj.nodeGraph, maskNode.id, 'mask', secondPartNode.id, 'mask');
 
   // Verify Smart Mesh UV+Retexture params & standalone `tripo_retexture` node roundtrip
   const smartMeshNode = createNode('tripo_mesh', 500, 120, { quality: 'smart', polyFaces: 18000, smartUv: true, autoRetexture: true });
@@ -139,8 +164,9 @@ async function testMgemArchiveAndBilingualPrompts() {
     const expJson = JSON.parse(expOut);
     assert.equal(expJson.headBodyRatio, 2.5);
     assert.ok(expJson.proportionRulerPath && expJson.proportionRulerPath.endsWith('proportion_ruler_2.5H.png'));
-    assert.equal(expJson.maskGuides.length, 1);
+    assert.equal(expJson.maskGuides.length, 2);
     assert.ok(expJson.maskGuides[0].overlayPath && expJson.maskGuides[0].overlayPath.endsWith(`${firstPartNode.id}_mask_overlay.png`));
+    assert.ok(expJson.maskGuides[1].overlayPath && expJson.maskGuides[1].overlayPath.endsWith(`${secondPartNode.id}_mask_overlay.png`));
   } finally {
     await fs.rm(tmpWork, { recursive: true, force: true });
   }

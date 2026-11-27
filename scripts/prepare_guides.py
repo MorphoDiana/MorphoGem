@@ -69,14 +69,40 @@ def extract_binary_mask(mask_img: Image.Image, mode: str, color_hex: str) -> lis
 
     if mode == 'color':
         tr, tg, tb = parse_hex_rgb(color_hex)
-        tol_sq = 68 * 68
+        # Discover rival major color centroids to prevent bleeding across adjacent ID mask blocks
+        buckets: dict[int, list[int]] = {}
+        step = max(1, (w * h) // 40000)
+        for r, g, b, a in data[::step]:
+            if a < 64:
+                continue
+            k = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)
+            bkt = buckets.get(k)
+            if bkt is None:
+                buckets[k] = [1, r, g, b]
+            else:
+                bkt[0] += 1
+                bkt[1] += r
+                bkt[2] += g
+                bkt[3] += b
+        rivals: list[tuple[int, int, int]] = []
+        for cnt, sr, sg, sb in sorted(buckets.values(), key=lambda x: -x[0])[:24]:
+            mr, mg, mb = sr // cnt, sg // cnt, sb // cnt
+            if (mr - tr) ** 2 + (mg - tg) ** 2 + (mb - tb) ** 2 <= 38 * 38:
+                continue
+            if all((mr - rr) ** 2 + (mg - rg) ** 2 + (mb - rb) ** 2 > 44 * 44 for rr, rg, rb in rivals):
+                rivals.append((mr, mg, mb))
+
+        tol_sq = 76 * 76
         out = [0] * n
         for i, (r, g, b, a) in enumerate(data):
             if a < 48:
                 continue
-            d2 = (r - tr) ** 2 + (g - tg) ** 2 + (b - tb) ** 2
-            if d2 <= tol_sq:
-                out[i] = 1
+            d_target = (r - tr) ** 2 + (g - tg) ** 2 + (b - tb) ** 2
+            if d_target > tol_sq:
+                continue
+            if any((r - rr) ** 2 + (g - rg) ** 2 + (b - rb) ** 2 < d_target for rr, rg, rb in rivals):
+                continue
+            out[i] = 1
         return out
 
     # Default 'white': bright pixels = target component
