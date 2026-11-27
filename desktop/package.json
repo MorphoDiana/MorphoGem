@@ -1,6 +1,6 @@
 {
   "name": "morphogem-desktop",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "private": true,
   "author": "MorphoDiana & Gemini",
   "description": "MorphoGem — 节点式 2D 转 3D 角色工坊 (Visual Node-Graph Studio + Mod Ecosystem + Built-in Tripo Daemon)",

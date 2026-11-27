@@ -3,6 +3,7 @@ import {
   GRAPH_VIEWS_4,
   GRAPH_VIEWS_3,
   ensureNodeGraph,
+  ensureGraphProportionSpec,
   getNode,
   incomingEdges,
   nodeStatus,
@@ -199,33 +200,30 @@ export function buildNodeGraphViewsPrompt(request, appRoot, origin, p, targetNod
     }
   }
 
+  const propSpec = ensureGraphProportionSpec(g);
   const globalRatio = resolveGraphHeadBodyRatio(g);
   if (globalRatio) {
     const headPct = (100 / globalRatio).toFixed(1);
     const bodyUnits = Number(Math.max(0.5, globalRatio - 1).toFixed(2));
     const bodyPct = (100 - Number(headPct)).toFixed(1);
+    const legPct = Math.round((propSpec.legRatio || 0.56) * 100);
+    const torsoPct = 100 - legPct;
     if (isEn) {
-      lines.push(`### 📏 HIGH-WEIGHT PARAMETRIC PROPORTION LOCK: **${globalRatio} Heads Tall (${globalRatio}H)**`);
-      lines.push(`- **Mandatory Visual Ruler**: Read \`<directory>/work/graph_inputs/proportion_ruler_${globalRatio}H.png\` and pass it as a layout/proportion reference when generating full-body and torso/body views.`);
-      lines.push(`- **Hard Anatomical Equation**: Total height = **${globalRatio} × Head Height** -> Head = **1.0H (${headPct}%)** | Neck + Torso + Legs combined = **ONLY ${bodyUnits}H (${bodyPct}%)**.`);
+      lines.push(`### 📏 HIGH-WEIGHT CUSTOM BODY PROPORTION LOCK: **${globalRatio} Heads Tall (${globalRatio}H)**`);
+      lines.push(`- **Mandatory WYSIWYG Mannequin Ruler**: Read \`<directory>/work/graph_inputs/proportion_ruler_${globalRatio}H.png\` — this is the exact 1:1 silhouette sculpted by the artist! Match its crown/chin/shoulder/waist/hip/crotch/feet landmarks strictly.`);
+      lines.push(`- **Vertical Ratio**: Total height = **${globalRatio} × Head Height** -> Head = **1.0H (${headPct}%)** | Neck (\`${propSpec.neckLen}H\`) + Torso + Legs = **${bodyUnits}H (${bodyPct}%)** | Torso : Legs split = **${torsoPct}% : ${legPct}%** of body height.`);
+      lines.push(`- **Horizontal Silhouette Widths (in multiples of Head Width \`HW = ${propSpec.headWidth}H\`)**: **Shoulder Width = \`${propSpec.shoulderWidth} × HW\`** | **Chest = \`${propSpec.chestWidth} × HW\`** | **Waist = \`${propSpec.waistWidth} × HW\`** | **Hip / Pelvis = \`${propSpec.hipWidth} × HW\`** | **Limb/Hand/Foot Volume = \`${propSpec.limbThickness}×\`** | **Arm Length = \`${propSpec.armSpan}×\`**.`);
       if (globalRatio <= 3.5) {
-        lines.push(`- **Chibi Re-Proportioning Override (CRITICAL)**: Override any tall limbs in the source concept art! For headless body/torso nodes, the entire neck-to-shoes height equals ONLY **${bodyUnits} head-units** — draw a compact rounded chibi torso, dramatically shortened chubby legs/arms, and plump hands/shoes so it never drifts back to a 6–7 head anime body!`);
-      } else if (globalRatio <= 5.2) {
-        lines.push(`- **Semi-Chibi Build**: Keep a compact **${bodyUnits}H** neck-to-shoes body length with slightly fuller, shorter limbs.`);
-      } else {
-        lines.push(`- **Slender Proportional Build**: Maintain an exact **${bodyUnits}H** neck-to-shoes vertical span with consistent shoulder-to-hip and torso-to-leg proportions.`);
+        lines.push(`- **Chibi Re-Proportioning Override (CRITICAL)**: Override any tall limbs in the source concept art! Headless body height is ONLY **${bodyUnits}H** with shoulder width \`${propSpec.shoulderWidth}×HW\` — draw shortened rounded chibi limbs and torso matching the mannequin ruler!`);
       }
       lines.push('');
     } else {
-      lines.push(`### 📏 最高权重参数化头身比强约束：**严格锁定 ${globalRatio} 头身 (${globalRatio}H)**`);
-      lines.push(`- **必看正交分格标尺图**：\`export-inputs\` 已自动生成 \`<directory>/work/graph_inputs/proportion_ruler_${globalRatio}H.png\`，绘制全身三视图及无头身体/服装躯干节点时**必须读取并参照该分格标尺图**！`);
-      lines.push(`- **硬性解剖比例公式**：角色全身总高 = **${globalRatio} 个头高** -> 头部占 **1.0H (${headPct}%)**，脖子+躯干+双腿总长严格等于 **${bodyUnits}H (${bodyPct}%)**。`);
+      lines.push(`### 📏 最高权重自定义人体比例强约束：**严格锁定 ${globalRatio} 头身 (${globalRatio}H) 定制体态**`);
+      lines.push(`- **必看 1:1 实时捏合标尺图**：\`export-inputs\` 已生成画师在界面实时调好确认的标尺人台图 \`<directory>/work/graph_inputs/proportion_ruler_${globalRatio}H.png\`，绘制全身及无头身体/服装躯干节点时**必须读取并严格对齐图中的肩宽、胸腰胯剪影、裆部高低与四肢粗细**！`);
+      lines.push(`- **纵向分段硬指标**：全身总高 = **${globalRatio} 个头高** -> 头部 **1.0H (${headPct}%)** | 脖子(\`${propSpec.neckLen}H\`) + 躯干 + 双腿总长 = **${bodyUnits}H (${bodyPct}%)** | 无头身体内部 **躯干 : 腿长 = ${torsoPct}% : ${legPct}%**。`);
+      lines.push(`- **横向体态宽度硬指标（以头宽 \`HW = ${propSpec.headWidth}×头高\` 为基准倍数）**：**肩宽 = \`${propSpec.shoulderWidth} × 头宽\`** | **胸廓宽 = \`${propSpec.chestWidth} × 头宽\`** | **腰宽 = \`${propSpec.waistWidth} × 头宽\`** | **胯宽/骨盆宽 = \`${propSpec.hipWidth} × 头宽\`** | **四肢手脚粗细系数 = \`${propSpec.limbThickness}×\`** | **臂长系数 = \`${propSpec.armSpan}×\`**。`);
       if (globalRatio <= 3.5) {
-        lines.push(`- **Q版/盲盒比例强制改写（严禁沿用原画长腿！）**：即使主立绘是修长成女/少年，也必须彻底重塑为 **${globalRatio} 头身 Q版豆豆/粘土体型**！尤其在拆解「无头身体/服装躯干」节点时，无头身体从领口到鞋底总高度仅有 **${bodyUnits} 个头高**，必须大幅缩短大腿小腿与手臂长度、加粗圆润手脚与躯干长宽比，绝不可惯性画回 6~7 头身的修长素体！`);
-      } else if (globalRatio <= 5.2) {
-        lines.push(`- **轻Q版/半Q体型要求**：无头身体总长锁定为 **${bodyUnits} 个头高**，四肢适度缩短并保持灵动微圆润体块。`);
-      } else {
-        lines.push(`- **修长标准体型要求**：无头身体从领口至鞋底严格保持 **${bodyUnits} 个头高** 的修长肩胯与上下身比例。`);
+        lines.push(`- **Q版/盲盒体型强制改写（严禁沿用原画修长体型！）**：无头身体从领口到鞋底仅有 **${bodyUnits} 个头高**、肩宽仅 **${propSpec.shoulderWidth} 倍头宽**，必须严格按照标尺人台缩短大腿小腿与手臂并保持圆润体量！`);
       }
       lines.push('');
     }

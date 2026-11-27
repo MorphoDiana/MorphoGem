@@ -1,30 +1,37 @@
 // Composable DAG Node-Graph workflow for arbitrary part extraction & per-part 3D generation.
 import {safePath, sha256} from './mgem-project.mjs';
+import {
+  PROPORTION_ARCHETYPES,
+  createProportionSpecFromArchetype,
+  normalizeProportionSpec,
+  proportionSpecStamp,
+} from './proportion-mannequin.mjs';
+
+export {PROPORTION_ARCHETYPES, createProportionSpecFromArchetype, normalizeProportionSpec, proportionSpecStamp};
 
 export const GRAPH_VIEWS_4 = Object.freeze(['front', 'left', 'right', 'back']);
 export const GRAPH_VIEWS_3 = Object.freeze(['front', 'side', 'back']);
 
-export const HEAD_BODY_RATIO_PRESETS = Object.freeze([
-  {id: 'keep', numeric: null, zh: '保持原画比例', en: 'Keep Source Ratio'},
-  {id: '2.0', numeric: 2.0, zh: '2.0 头身 · 超萌粘土豆豆人', en: '2.0 Heads · Super Chibi / Nendoroid'},
-  {id: '2.5', numeric: 2.5, zh: '2.5 头身 · 潮玩盲盒手办', en: '2.5 Heads · Blindbox Chibi Figure'},
-  {id: '3.0', numeric: 3.0, zh: '3.0 头身 · SD 游戏小人', en: '3.0 Heads · SD Game Character'},
-  {id: '4.0', numeric: 4.0, zh: '4.0 头身 · 轻Q版二游体型', en: '4.0 Heads · Semi-Chibi'},
-  {id: '6.0', numeric: 6.0, zh: '6.0 头身 · 青春少女/少年', en: '6.0 Heads · Youth Anime'},
-  {id: '6.8', numeric: 6.8, zh: '6.8 头身 · 二次元标准体型', en: '6.8 Heads · Standard Anime'},
-  {id: '7.5', numeric: 7.5, zh: '7.5 头身 · 修长成女/成男', en: '7.5 Heads · Tall Mature Anime'},
-  {id: '8.5', numeric: 8.5, zh: '8.5 头身 · 超修长时装/机甲', en: '8.5 Heads · Heroic / Fashion 8.5H'},
-  {id: 'custom', numeric: null, zh: '自定义精确头身数…', en: 'Custom Head Count...'},
-]);
+export const HEAD_BODY_RATIO_PRESETS = PROPORTION_ARCHETYPES;
 
 export function resolveNumericHeadBodyRatio(presetVal, customVal = 6.8) {
   if (!presetVal || presetVal === 'keep') return null;
+  const matched = PROPORTION_ARCHETYPES.find(a => a.id === presetVal);
+  if (matched && matched.id !== 'custom' && matched.id !== 'keep') return matched.headRatio;
   if (presetVal === 'custom') {
     const c = Number(customVal);
     return Number.isFinite(c) ? Math.max(1.5, Math.min(9.5, c)) : 6.8;
   }
   const n = Number(presetVal);
   return Number.isFinite(n) && n >= 1.5 && n <= 9.5 ? n : null;
+}
+
+export function ensureGraphProportionSpec(graph) {
+  if (!graph) return createProportionSpecFromArchetype('keep');
+  graph.proportionSpec = normalizeProportionSpec(graph.proportionSpec, graph.headBodyRatio, graph.customHeadBodyRatio);
+  graph.headBodyRatio = graph.proportionSpec.enabled ? graph.proportionSpec.archetype : 'keep';
+  graph.customHeadBodyRatio = graph.proportionSpec.headRatio;
+  return graph.proportionSpec;
 }
 
 export const NODE_SPECS = Object.freeze({
@@ -154,6 +161,10 @@ export function defaultHeightForPartName(name = '', ratioNumeric = null, totalHe
 
 export function resolveGraphHeadBodyRatio(graph) {
   if (!graph) return null;
+  if (graph.proportionSpec && typeof graph.proportionSpec === 'object') {
+    const ps = normalizeProportionSpec(graph.proportionSpec, graph.headBodyRatio, graph.customHeadBodyRatio);
+    if (ps.enabled) return ps.headRatio;
+  }
   const gRatio = resolveNumericHeadBodyRatio(graph.headBodyRatio, graph.customHeadBodyRatio);
   if (gRatio) return gRatio;
   const bal = (graph.nodes || []).find(n => n.type === 'balance_views');
@@ -353,6 +364,7 @@ export function createTemplateGraph(preset = 'standard_split') {
     preset,
     headBodyRatio: 'keep',
     customHeadBodyRatio: 6.8,
+    proportionSpec: createProportionSpecFromArchetype('keep'),
     activeWorkspace: 'canvas', // 'canvas' | 'viewport'
     viewport: {panX: 24, panY: 20, zoom: 0.86},
     nodes,
@@ -365,6 +377,7 @@ export function ensureNodeGraph(p) {
     const mode = p?.workflow?.subjectMode === 'prop' ? 'single_prop' : p?.workflow?.subjectMode === 'composite' ? 'deluxe_composite' : 'standard_split';
     p.nodeGraph = createTemplateGraph(mode);
   }
+  ensureGraphProportionSpec(p.nodeGraph);
   return p.nodeGraph;
 }
 
@@ -589,6 +602,7 @@ export function serializeGraphAsTemplate(graph, {id = '', name = '自定义模�
     name: String(name || '自定义模板').trim().slice(0, 60),
     description: String(description || '').trim().slice(0, 160),
     createdAt: new Date().toISOString(),
+    proportionSpec: graph?.proportionSpec ? normalizeProportionSpec(graph.proportionSpec) : undefined,
     viewport: structuredClone(graph?.viewport || {panX: 24, panY: 20, zoom: 0.86}),
     nodes: cleanNodes,
     edges: cleanEdges,
@@ -613,9 +627,13 @@ export function instantiateGraphFromTemplate(tplDef) {
     realIdMap.set(item.relId, created.id);
     nodes.push(created);
   }
+  const propSpec = normalizeProportionSpec(tplDef.proportionSpec);
   const graph = {
     version: 1,
     preset: tplDef.id || 'custom',
+    headBodyRatio: propSpec.enabled ? propSpec.archetype : 'keep',
+    customHeadBodyRatio: propSpec.headRatio,
+    proportionSpec: propSpec,
     activeWorkspace: 'canvas',
     viewport: structuredClone(tplDef.viewport || {panX: 24, panY: 20, zoom: 0.86}),
     nodes,
@@ -860,16 +878,16 @@ export function nodeInputStamp(graph, nodeId, visited = new Set()) {
     const srcEdge = incomingEdges(graph, nodeId, 'source')[0];
     const maskEdge = incomingEdges(graph, nodeId, 'mask')[0];
     const styleEdge = incomingEdges(graph, nodeId, 'style')[0];
-    const effRatio = node.params?.headBodyRatio && node.params.headBodyRatio !== 'keep'
+    const effPropStamp = node.params?.headBodyRatio && node.params.headBodyRatio !== 'keep'
       ? [node.params.headBodyRatio, node.params.customHeadBodyRatio || 6.8]
-      : [graph.headBodyRatio || 'keep', graph.customHeadBodyRatio || 6.8];
+      : proportionSpecStamp(ensureGraphProportionSpec(graph));
     return JSON.stringify([
       node.type,
       node.params?.partName || '',
       node.params?.promptHint || '',
       node.params?.pose || 't',
       node.params?.resolution || 1024,
-      effRatio,
+      effPropStamp,
       node.params?.maskMode || 'auto',
       node.params?.maskColor || '',
       node.data?.maskImage?.sha256 || null,

@@ -17,6 +17,7 @@ import {
   GRAPH_VIEWS_4,
   GRAPH_VIEWS_3,
   ensureNodeGraph,
+  ensureGraphProportionSpec,
   getNode,
   isMeshNodeType,
   resolveUpstreamViewsNode,
@@ -240,16 +241,17 @@ async function main() {
       }
     }
 
-    // Generate Orthographic Head-Body Proportion Ruler PNG when parametric ratio is enabled
+    // Generate WYSIWYG Orthographic Body Proportion Ruler PNG when parametric proportion lock is enabled
+    const propSpec = ensureGraphProportionSpec(g);
     const globalRatio = resolveGraphHeadBodyRatio(g);
     let proportionRulerPath = null;
     if (globalRatio) {
-      const primaryPose = g.nodes.find(x => x.type === 'balance_views' || x.type === 'part_views')?.params?.pose || 't';
       const rulerOut = path.join(outDir, `proportion_ruler_${globalRatio}H.png`);
       proportionRulerPath = await generateRatioRulerGuide({
+        spec: propSpec.enabled ? propSpec : null,
         ratio: globalRatio,
         size: 1024,
-        pose: primaryPose,
+        pose: propSpec.pose || 't',
         outPath: rulerOut,
       });
     }
@@ -258,6 +260,7 @@ async function main() {
       projectId: p.id,
       projectName: p.name,
       headBodyRatio: globalRatio,
+      proportionSpec: propSpec.enabled ? propSpec : null,
       proportionRulerPath,
       maskGuides,
       inputs: exported,

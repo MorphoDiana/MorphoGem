@@ -1348,14 +1348,31 @@ dialog#ngImagePreviewDialog {
   gap: 6px;
 }
 
+.ng-mask-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+}
+
 .ng-mask-thumb {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   border-radius: 5px;
-  object-fit: contain;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
   background: #090d16;
   border: 1px solid rgba(244, 63, 94, 0.45);
   flex-shrink: 0;
+  font-size: 15px;
+}
+
+.ng-mask-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 /* 4-up compact strip on part_views node card */
@@ -1365,4 +1382,170 @@ dialog#ngImagePreviewDialog {
 }
 .ng-views-grid.cols-3 {
   grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+
+/* Live Interactive Body Proportion Designer Studio */
+dialog#ngProportionStudioDialog {
+  width: min(1060px, 95vw) !important;
+  max-width: 95vw !important;
+  background: #0b1120;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  padding: 18px 20px;
+}
+
+.prop-studio-layout {
+  display: grid;
+  grid-template-columns: minmax(340px, 470px) minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 12px;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .prop-studio-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.prop-preview-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prop-preview-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #334155;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.prop-preview-stage[data-theme="blueprint"] {
+  background: #0c1322;
+}
+
+.prop-underlay-img {
+  position: absolute;
+  inset: 6% 8%;
+  width: 84%;
+  height: 88%;
+  object-fit: contain;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.prop-preview-stage canvas {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.prop-controls-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 72vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.prop-enable-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: rgba(20, 83, 45, 0.25);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+}
+
+.prop-enable-banner[data-disabled="1"] {
+  background: rgba(30, 41, 59, 0.5);
+  border-color: #334155;
+}
+
+.prop-archetype-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.prop-slider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.prop-slider-row {
+  display: grid;
+  grid-template-columns: 146px minmax(0, 1fr) 62px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: #cbd5e1;
+}
+
+.prop-slider-row.highlight span {
+  color: #38bdf8;
+  font-weight: 700;
+}
+
+.prop-slider-row input[type="range"] {
+  width: 100%;
+  accent-color: #38bdf8;
+  cursor: pointer;
+}
+
+.prop-slider-row input[type="number"] {
+  width: 62px;
+  height: 24px;
+  background: #090d16;
+  border: 1px solid #334155;
+  border-radius: 5px;
+  color: #f8fafc;
+  font-size: 11.5px;
+  padding: 0 5px;
+  text-align: right;
+}
+
+/* Live Miniature Proportion Preview inside Canvas Node Cards */
+.ng-prop-mini-card {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(13, 42, 46, 0.52);
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.ng-prop-mini-card:hover {
+  border-color: #2dd4bf;
+  background: rgba(15, 58, 63, 0.68);
+}
+
+.ng-prop-mini-canvas {
+  width: 68px;
+  height: 68px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  flex-shrink: 0;
+  background: #ffffff;
 }

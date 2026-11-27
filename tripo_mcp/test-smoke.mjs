@@ -74,8 +74,22 @@ async function testMgemArchiveAndBilingualPrompts() {
   const doc = await registerGraphDocument(proj, files, 'concept.png', new Uint8Array(png1x1), 'src');
   srcNode.data.image = { ...doc, mime: 'image/png', width: 1, height: 1 };
 
-  // Verify Parametric Head-to-Body Ratio (2.5H chibi) & Mask-Guided Part Extraction (`mask_ref` + `export-inputs` overlays)
-  proj.nodeGraph.headBodyRatio = '2.5';
+  // Verify Custom Parametric Body Proportion Spec (custom shoulder/waist/hip/leg ratios) & Mask-Guided Extraction
+  proj.nodeGraph.proportionSpec = {
+    enabled: true,
+    archetype: 'custom',
+    headRatio: 2.5,
+    headWidth: 0.96,
+    neckLen: 0.08,
+    shoulderWidth: 1.88,
+    chestWidth: 1.42,
+    waistWidth: 0.95,
+    hipWidth: 1.24,
+    legRatio: 0.58,
+    limbThickness: 1.15,
+    armSpan: 0.92,
+    pose: 't',
+  };
   assert.ok(defaultHeightForPartName('无发裸脸', 2.5, 1.5) > 0.55, '2.5H chibi head should be ~0.60m on 1.5m character');
   assert.ok(defaultHeightForPartName('服装身体', 2.5, 1.5) < 1.05, '2.5H chibi headless body should be compact (<1.05m)');
 
@@ -148,6 +162,8 @@ async function testMgemArchiveAndBilingualPrompts() {
     assert.ok(prompt.includes('scripts/mgem-session.mjs'), `Prompt (${locale}) missing mgem-session.mjs`);
     assert.ok(prompt.includes('scripts/align_views.py'), `Prompt (${locale}) missing align_views.py`);
     assert.ok(prompt.includes('proportion_ruler_2.5H.png'), `Prompt (${locale}) missing parametric ratio ruler`);
+    assert.ok(prompt.includes('1.88'), `Prompt (${locale}) missing custom shoulderWidth 1.88`);
+    assert.ok(prompt.includes('58%'), `Prompt (${locale}) missing custom legRatio 58%`);
     assert.ok(prompt.includes(`${firstPartNode.id}_mask_overlay.png`), `Prompt (${locale}) missing mask highlight overlay`);
     assert.ok(prompt.includes('skills/morphogem-orthographic-views/SKILL.md'), `Prompt (${locale}) missing orthographic skill`);
     assert.ok(prompt.includes('skills/morphogem-albedo-shading/SKILL.md'), `Prompt (${locale}) missing albedo skill`);

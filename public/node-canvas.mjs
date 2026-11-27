@@ -3,6 +3,10 @@ import {
   GRAPH_VIEWS_4,
   GRAPH_VIEWS_3,
   HEAD_BODY_RATIO_PRESETS,
+  PROPORTION_ARCHETYPES,
+  createProportionSpecFromArchetype,
+  normalizeProportionSpec,
+  ensureGraphProportionSpec,
   resolveNumericHeadBodyRatio,
   BUILTIN_BRANCH_PRESETS,
   ensureNodeGraph,
@@ -31,7 +35,12 @@ import {
 } from './node-graph.mjs';
 import {inspectImage, validateProject, DEFAULT_PROJECT_NAMES} from './mgem-project.mjs';
 import {initModAndSystemUI} from './mod-manager-ui.mjs';
-import {tr, onLocaleChange} from './i18n.mjs';
+import {
+  formatProportionSummary,
+  renderProportionMannequinRgba,
+  drawProportionMannequinToCanvas,
+} from './proportion-mannequin.mjs';
+import {tr, onLocaleChange, isEn} from './i18n.mjs';
 
 const KIND_COLORS = {
   image: '#38bdf8',
@@ -126,8 +135,8 @@ export function initNodeCanvas(hooks) {
         <button type="button" id="ngApplyTemplate" class="ng-btn" title="重置套用左侧选中的模板（保留已上传的主立绘与参考图）">↻ 重置</button>
         <button type="button" id="ngSaveTemplate" class="ng-btn violet" title="将当前画布的完整节点布局与参数保存为自定义模板">💾 存为模板</button>
         <span class="ng-sep"></span>
-        <select id="ngGlobalRatioSelect" class="ng-select" title="精确头身比强约束（自动生成正交分格标尺图并联动 3D 头身缩放）" style="max-width:176px"></select>
-        <input type="number" id="ngGlobalRatioCustom" class="ng-input" min="1.5" max="9.5" step="0.1" value="6.8" style="width:62px;height:30px;padding:2px 6px" title="自定义头身比数值 (1.5 ~ 9.5)" hidden>
+        <select id="ngGlobalRatioSelect" class="ng-select" title="快速切换体型与头身比预设" style="max-width:176px"></select>
+        <button type="button" id="ngEditProportionBtn" class="ng-btn cyan" title="打开可视化体型比例设计器：实时滑块微调头身比、肩宽、腰胯、腿长并实时查看比例标尺图">🧍 调体型图</button>
         <span class="ng-sep"></span>
         <button type="button" id="ngQuickAddBtn" class="ng-btn amber" title="搜索并添加节点或自定义分支 (快捷键 Space / Shift+A)">+ 添加节点 <span class="ng-kbd">Space</span></button>
         <button type="button" id="ngSaveBranch" class="ng-btn violet" title="将当前选中的节点（或拆图+建模组合）保存为可复用的分支预设">🌿 存分支</button>
@@ -238,6 +247,68 @@ export function initNodeCanvas(hooks) {
   `;
   document.body.append(maskPickerDlg);
   maskPickerDlg.querySelector('#ngMaskPickerClose').onclick = () => maskPickerDlg.close();
+
+  // Live Interactive Parametric Body Proportion Studio Modal
+  const propStudioDlg = document.createElement('dialog');
+  propStudioDlg.id = 'ngProportionStudioDialog';
+  propStudioDlg.innerHTML = `
+    <div class="dialog-top">
+      <h2 id="propStudioTitle">🧍 可视化体型与头身比实时设计器</h2>
+      <button type="button" id="propStudioCloseX">×</button>
+    </div>
+    <div class="prop-studio-layout">
+      <div class="prop-preview-col">
+        <div class="prop-preview-stage" id="propPreviewStage" data-theme="light">
+          <img id="propUnderlayImg" class="prop-underlay-img" alt="" hidden style="opacity:0.36">
+          <canvas id="propStudioCanvas" width="560" height="560"></canvas>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11.5px;color:#94a3b8">
+          <div style="display:flex;gap:5px">
+            <button type="button" class="ng-pill active" data-prop-theme="light" id="propThemeLightBtn">⬜ 标准白底 (AI导出同款)</button>
+            <button type="button" class="ng-pill" data-prop-theme="blueprint" id="propThemeDarkBtn">🟦 蓝图深色</button>
+          </div>
+          <label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;color:#cbd5e1">
+            <input type="checkbox" id="propShowUnderlayChk">
+            <span id="propUnderlayLbl">叠底主立绘对比</span>
+            <input type="range" id="propUnderlayOpacity" min="0.15" max="0.80" step="0.05" value="0.36" style="width:64px" hidden>
+          </label>
+        </div>
+        <div id="propLiveMetricBar" style="font-size:11.5px;color:#5eead4;background:rgba(13,42,46,0.5);border:1px solid rgba(45,212,191,0.3);border-radius:7px;padding:6px 10px"></div>
+      </div>
+
+      <div class="prop-controls-col">
+        <div class="prop-enable-banner" id="propEnableBanner">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:#f8fafc">
+            <input type="checkbox" id="propEnableChk" checked>
+            <strong id="propEnableTitle">启用参数化体型强约束（导出此实时标尺图高权重约束 AI 与 3D）</strong>
+          </label>
+        </div>
+
+        <div>
+          <div style="font-size:11px;color:#94a3b8;margin-bottom:5px" id="propPresetHint">快速载入基础人设基底（载入后下方所有滑块均可自由微调）：</div>
+          <div class="prop-archetype-pills" id="propArchetypePills"></div>
+        </div>
+
+        <div class="prop-slider-list" id="propSliderList"></div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:#111827;border:1px solid #1e293b;border-radius:9px;padding:8px 12px;font-size:12px">
+          <span id="propPoseLabel" style="color:#cbd5e1">标尺手臂姿态：</span>
+          <div style="display:flex;gap:6px">
+            <button type="button" class="ng-pill active" data-prop-pose="t">T-Pose 水平展臂</button>
+            <button type="button" class="ng-pill" data-prop-pose="a">A-Pose 40°斜展臂</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="dialog-actions" style="margin-top:14px;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <button type="button" id="propDownloadPngBtn" class="ng-btn">⬇ 导出当前比例标尺图 (.png)</button>
+      <div style="display:flex;gap:8px">
+        <button type="button" id="propCancelBtn" class="ng-btn">取消</button>
+        <button type="button" id="propApplyBtn" class="ng-btn primary">💾 应用此体型比例</button>
+      </div>
+    </div>
+  `;
+  document.body.append(propStudioDlg);
 
   // Save Template / Save Branch Dialog
   const savePresetDlg = document.createElement('dialog');
@@ -573,21 +644,25 @@ export function initNodeCanvas(hooks) {
 
   function refreshGlobalRatioSelect() {
     const sel = $('#ngGlobalRatioSelect');
-    const numInp = $('#ngGlobalRatioCustom');
-    if (!sel || !numInp) return;
+    const editBtn = $('#ngEditProportionBtn');
+    if (!sel) return;
     const g = currentGraph();
-    const curVal = g.headBodyRatio || 'keep';
+    const spec = ensureGraphProportionSpec(g);
+    const curVal = spec.enabled ? (spec.archetype || 'custom') : 'keep';
     sel.replaceChildren();
-    for (const preset of HEAD_BODY_RATIO_PRESETS) {
+    for (const preset of PROPORTION_ARCHETYPES) {
       const opt = document.createElement('option');
       opt.value = preset.id;
       opt.textContent = tr(preset.zh, preset.en);
       sel.append(opt);
     }
-    const exists = HEAD_BODY_RATIO_PRESETS.some(p => p.id === curVal);
-    sel.value = exists ? curVal : 'keep';
-    numInp.hidden = sel.value !== 'custom';
-    numInp.value = String(g.customHeadBodyRatio ?? 6.8);
+    const exists = PROPORTION_ARCHETYPES.some(p => p.id === curVal);
+    sel.value = exists ? curVal : (spec.enabled ? 'custom' : 'keep');
+    if (editBtn) {
+      editBtn.textContent = spec.enabled
+        ? tr(`🧍 调体型 (${spec.headRatio}H·肩${spec.shoulderWidth}×)`, `🧍 Body (${spec.headRatio}H·Shld ${spec.shoulderWidth}×)`)
+        : tr('🧍 实时调体型图', '🧍 Body Designer');
+    }
   }
 
   // --- Undo / Redo Snapshot Stack ---
@@ -596,6 +671,7 @@ export function initNodeCanvas(hooks) {
       preset: g.preset || 'standard_split',
       headBodyRatio: g.headBodyRatio || 'keep',
       customHeadBodyRatio: g.customHeadBodyRatio ?? 6.8,
+      proportionSpec: ensureGraphProportionSpec(g),
       modMeta: g.modMeta || null,
       nodes: g.nodes,
       edges: g.edges,
@@ -636,8 +712,8 @@ export function initNodeCanvas(hooks) {
       if (curNode) preservedData.set(lid, structuredClone(curNode.data));
     }
     g.preset = parsed.preset || g.preset;
-    g.headBodyRatio = parsed.headBodyRatio || 'keep';
-    g.customHeadBodyRatio = parsed.customHeadBodyRatio ?? 6.8;
+    g.proportionSpec = normalizeProportionSpec(parsed.proportionSpec, parsed.headBodyRatio, parsed.customHeadBodyRatio);
+    ensureGraphProportionSpec(g);
     g.nodes = parsed.nodes;
     g.edges = parsed.edges;
     for (const [lid, data] of preservedData) {
@@ -1865,6 +1941,247 @@ export function initNodeCanvas(hooks) {
     img.src = maskUrl;
   }
 
+  // --- Live Interactive Body Proportion Designer Studio ---
+  let propPreviewTheme = 'light';
+  const PROP_SLIDER_DEFS = [
+    {key: 'headRatio', min: 1.5, max: 9.5, step: 0.1, hi: true, zh: '头身比 (总高 = N头)', en: 'Head-Body Ratio (H)'},
+    {key: 'shoulderWidth', min: 0.60, max: 2.60, step: 0.01, hi: true, zh: '肩宽 (×头宽倍数)', en: 'Shoulder Width (×HW)'},
+    {key: 'chestWidth', min: 0.60, max: 2.25, step: 0.01, hi: false, zh: '胸廓宽 (×头宽倍数)', en: 'Chest Width (×HW)'},
+    {key: 'waistWidth', min: 0.40, max: 1.85, step: 0.01, hi: false, zh: '腰宽 (×头宽倍数)', en: 'Waist Width (×HW)'},
+    {key: 'hipWidth', min: 0.60, max: 2.20, step: 0.01, hi: true, zh: '胯宽/骨盆 (×头宽)', en: 'Hip / Pelvis (×HW)'},
+    {key: 'legRatio', min: 0.30, max: 0.68, step: 0.01, hi: true, zh: '腿长占比 (占无头身)', en: 'Leg Ratio (of Body)'},
+    {key: 'headWidth', min: 0.55, max: 1.22, step: 0.01, hi: false, zh: '脸宽/头圆度 (×头高)', en: 'Head Width / Round'},
+    {key: 'neckLen', min: 0.02, max: 0.36, step: 0.01, hi: false, zh: '脖子长度 (×头高)', en: 'Neck Length (×H)'},
+    {key: 'limbThickness', min: 0.50, max: 1.65, step: 0.01, hi: false, zh: '四肢与手脚粗细', en: 'Limb & Foot Volume'},
+    {key: 'armSpan', min: 0.70, max: 1.22, step: 0.01, hi: false, zh: '手臂长度系数', en: 'Arm Length Factor'},
+  ];
+
+  function openProportionStudio({autoEnableIfOff = true} = {}) {
+    const g = currentGraph();
+    const curSpec = ensureGraphProportionSpec(g);
+    let draft = structuredClone(curSpec);
+    if (autoEnableIfOff && !draft.enabled) {
+      draft.enabled = true;
+      if (!draft.archetype || draft.archetype === 'keep') draft.archetype = 'anime_fem_68';
+    }
+
+    const stageBox = propStudioDlg.querySelector('#propPreviewStage');
+    const cvs = propStudioDlg.querySelector('#propStudioCanvas');
+    const underlayImg = propStudioDlg.querySelector('#propUnderlayImg');
+    const underlayChk = propStudioDlg.querySelector('#propShowUnderlayChk');
+    const underlayOp = propStudioDlg.querySelector('#propUnderlayOpacity');
+    const enableChk = propStudioDlg.querySelector('#propEnableChk');
+    const enableBanner = propStudioDlg.querySelector('#propEnableBanner');
+    const pillsWrap = propStudioDlg.querySelector('#propArchetypePills');
+    const sliderList = propStudioDlg.querySelector('#propSliderList');
+    const metricBar = propStudioDlg.querySelector('#propLiveMetricBar');
+
+    // Bilingual static labels
+    propStudioDlg.querySelector('#propStudioTitle').textContent = tr(
+      '🧍 可视化体型与头身比实时设计器（所见即导出给 AI 的精确标尺图）',
+      '🧍 Live Parametric Body Proportion Studio (WYSIWYG Orthographic Ruler)'
+    );
+    propStudioDlg.querySelector('#propThemeLightBtn').textContent = tr('⬜ 标准白底 (AI导出同款)', '⬜ Light Chart (AI Export)');
+    propStudioDlg.querySelector('#propThemeDarkBtn').textContent = tr('🟦 蓝图深色', '🟦 Blueprint Dark');
+    propStudioDlg.querySelector('#propUnderlayLbl').textContent = tr('叠底主立绘对比', 'Concept Underlay');
+    propStudioDlg.querySelector('#propEnableTitle').textContent = tr(
+      '启用参数化体型强约束（导出此实时标尺图高权重约束 AI 拆图与 3D 视口）',
+      'Enable Parametric Proportion Lock (exports this ruler PNG + exact ratios to AI & 3D)'
+    );
+    propStudioDlg.querySelector('#propPresetHint').textContent = tr(
+      '一键载入基础人设模板（载入后下方全部滑块均可自由实时拖动微调）：',
+      'Quick starter archetypes (all sliders below remain 100% freely adjustable):'
+    );
+    propStudioDlg.querySelector('#propPoseLabel').textContent = tr('标尺手臂姿态：', 'Mannequin Pose:');
+    propStudioDlg.querySelector('#propDownloadPngBtn').textContent = tr('⬇ 导出当前比例标尺图 (.png)', '⬇ Save Ruler PNG');
+    propStudioDlg.querySelector('#propCancelBtn').textContent = tr('取消', 'Cancel');
+    propStudioDlg.querySelector('#propApplyBtn').textContent = tr('💾 应用此体型比例', '💾 Apply Proportions');
+
+    const srcDoc = g.nodes.find(n => n.type === 'source_image')?.data?.image || null;
+    const srcUrl = fileUrl(srcDoc);
+    if (srcUrl) {
+      underlayImg.src = srcUrl;
+    } else {
+      underlayChk.checked = false;
+      underlayImg.hidden = true;
+    }
+
+    const rowControls = new Map();
+
+    const syncControlsFromDraft = () => {
+      enableChk.checked = Boolean(draft.enabled);
+      enableBanner.dataset.disabled = draft.enabled ? '0' : '1';
+      sliderList.style.opacity = draft.enabled ? '1' : '0.5';
+      for (const [key, {range, num}] of rowControls) {
+        range.value = String(draft[key]);
+        num.value = String(draft[key]);
+      }
+      for (const b of pillsWrap.querySelectorAll('button[data-arch]')) {
+        b.classList.toggle('active', draft.enabled && draft.archetype === b.dataset.arch);
+      }
+      for (const pb of propStudioDlg.querySelectorAll('button[data-prop-pose]')) {
+        pb.classList.toggle('active', draft.pose === pb.dataset.propPose);
+      }
+    };
+
+    const redrawLiveChart = () => {
+      const useUnderlay = Boolean(srcUrl && underlayChk.checked);
+      underlayImg.hidden = !useUnderlay;
+      underlayOp.hidden = !useUnderlay;
+      underlayImg.style.opacity = underlayOp.value;
+      stageBox.dataset.theme = propPreviewTheme;
+
+      drawProportionMannequinToCanvas(cvs, draft, {
+        size: 560,
+        theme: propPreviewTheme,
+        transparentBg: useUnderlay,
+        showLabels: true,
+      });
+
+      const bodyU = Math.max(0.5, Number((draft.headRatio - 1).toFixed(2)));
+      const legPct = Math.round(draft.legRatio * 100);
+      metricBar.textContent = draft.enabled
+        ? tr(
+            `📏 实时参数：${draft.headRatio} 头身（无头身长 ${bodyU}H） · 肩宽 ${draft.shoulderWidth}×头宽 · 腰 ${draft.waistWidth}× · 胯 ${draft.hipWidth}× · 腿占身长 ${legPct}%`,
+            `📏 Live: ${draft.headRatio}H (Body ${bodyU}H) · Shld ${draft.shoulderWidth}×HW · Waist ${draft.waistWidth}× · Hip ${draft.hipWidth}× · Legs ${legPct}%`
+          )
+        : tr('⚪ 当前未启用体型覆盖（AI 将保持原画默认头身与肩胯比例）', '⚪ Parametric override off (keeps source art proportions)');
+    };
+
+    // Populate archetype quick pills
+    pillsWrap.replaceChildren();
+    for (const arch of PROPORTION_ARCHETYPES) {
+      if (arch.id === 'keep' || arch.id === 'custom') continue;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ng-pill';
+      btn.dataset.arch = arch.id;
+      btn.textContent = tr(arch.zh.split('（')[0], arch.en);
+      btn.onclick = () => {
+        draft = createProportionSpecFromArchetype(arch.id);
+        draft.enabled = true;
+        syncControlsFromDraft();
+        redrawLiveChart();
+      };
+      pillsWrap.append(btn);
+    }
+
+    // Populate 10 anatomical sliders
+    sliderList.replaceChildren();
+    for (const def of PROP_SLIDER_DEFS) {
+      const row = document.createElement('label');
+      row.className = 'prop-slider-row' + (def.hi ? ' highlight' : '');
+      const lbl = document.createElement('span');
+      lbl.textContent = tr(def.zh, def.en);
+      const range = document.createElement('input');
+      range.type = 'range';
+      range.min = String(def.min);
+      range.max = String(def.max);
+      range.step = String(def.step);
+      range.value = String(draft[def.key]);
+
+      const num = document.createElement('input');
+      num.type = 'number';
+      num.min = String(def.min);
+      num.max = String(def.max);
+      num.step = String(def.step);
+      num.value = String(draft[def.key]);
+
+      const onVal = rawVal => {
+        const v = Math.max(def.min, Math.min(def.max, Number(Number(rawVal).toFixed(2))));
+        if (!Number.isFinite(v)) return;
+        draft[def.key] = v;
+        draft.enabled = true;
+        draft.archetype = 'custom';
+        range.value = String(v);
+        num.value = String(v);
+        enableChk.checked = true;
+        enableBanner.dataset.disabled = '0';
+        sliderList.style.opacity = '1';
+        for (const b of pillsWrap.querySelectorAll('button[data-arch]')) b.classList.remove('active');
+        redrawLiveChart();
+      };
+      range.oninput = ev => onVal(ev.target.value);
+      num.onchange = ev => onVal(ev.target.value);
+
+      row.append(lbl, range, num);
+      sliderList.append(row);
+      rowControls.set(def.key, {range, num});
+    }
+
+    enableChk.onchange = () => {
+      draft.enabled = enableChk.checked;
+      if (draft.enabled && (!draft.archetype || draft.archetype === 'keep')) draft.archetype = 'custom';
+      syncControlsFromDraft();
+      redrawLiveChart();
+    };
+
+    for (const tb of propStudioDlg.querySelectorAll('button[data-prop-theme]')) {
+      tb.classList.toggle('active', tb.dataset.propTheme === propPreviewTheme);
+      tb.onclick = () => {
+        propPreviewTheme = tb.dataset.propTheme;
+        for (const x of propStudioDlg.querySelectorAll('button[data-prop-theme]')) {
+          x.classList.toggle('active', x === tb);
+        }
+        redrawLiveChart();
+      };
+    }
+
+    for (const pb of propStudioDlg.querySelectorAll('button[data-prop-pose]')) {
+      pb.onclick = () => {
+        draft.pose = pb.dataset.propPose === 'a' ? 'a' : 't';
+        draft.enabled = true;
+        syncControlsFromDraft();
+        redrawLiveChart();
+      };
+    }
+
+    underlayChk.onchange = () => {
+      if (underlayChk.checked && !srcUrl) {
+        underlayChk.checked = false;
+        hooks.toast(tr('请先在主立绘节点上传角色原画后再开启叠底对比', 'Upload a Source Concept image first to enable underlay'));
+        return;
+      }
+      redrawLiveChart();
+    };
+    underlayOp.oninput = () => redrawLiveChart();
+
+    propStudioDlg.querySelector('#propDownloadPngBtn').onclick = () => {
+      const off = document.createElement('canvas');
+      off.width = 1024;
+      off.height = 1024;
+      drawProportionMannequinToCanvas(off, draft, {size: 1024, theme: 'light', transparentBg: false, showLabels: true});
+      off.toBlob(blob => {
+        if (blob) hooks.download?.(blob, `MorphoGem_Proportion_${draft.headRatio}H.png`);
+      }, 'image/png');
+    };
+
+    const closeStudio = () => propStudioDlg.close();
+    propStudioDlg.querySelector('#propStudioCloseX').onclick = closeStudio;
+    propStudioDlg.querySelector('#propCancelBtn').onclick = closeStudio;
+    propStudioDlg.querySelector('#propApplyBtn').onclick = () => {
+      pushUndo();
+      g.proportionSpec = normalizeProportionSpec(draft);
+      ensureGraphProportionSpec(g);
+      refreshGlobalRatioSelect();
+      hooks.changed();
+      render();
+      window.dispatchEvent(new CustomEvent('morphogem-ratio-changed', {
+        detail: {ratio: g.proportionSpec.enabled ? g.proportionSpec.headRatio : null, spec: g.proportionSpec},
+      }));
+      closeStudio();
+      hooks.toast(
+        g.proportionSpec.enabled
+          ? tr(`✓ 已应用自定义体型比例：${formatProportionSummary(g.proportionSpec, false)}`, `✓ Applied custom proportions: ${formatProportionSummary(g.proportionSpec, true)}`)
+          : tr('✓ 已恢复为保持原画默认比例', '✓ Restored original concept proportions')
+      );
+    };
+
+    syncControlsFromDraft();
+    redrawLiveChart();
+    if (!propStudioDlg.open) propStudioDlg.showModal();
+  }
+
   function buildNodeBody(g, node) {
     const body = document.createElement('div');
     body.className = 'ng-body';
@@ -2079,14 +2396,40 @@ export function initNodeCanvas(hooks) {
         }
         body.append(maskBox);
       } else {
-        // balance_views: show current effective parametric head-to-body ratio badge
-        const numR = resolveNumericHeadBodyRatio(g.headBodyRatio, g.customHeadBodyRatio);
-        const ratioBanner = document.createElement('div');
-        ratioBanner.style.cssText = 'font-size:11px;color:#5eead4;background:rgba(13,42,46,0.55);border:1px solid rgba(45,212,191,0.3);border-radius:6px;padding:5px 8px;display:flex;justify-content:space-between;align-items:center';
-        ratioBanner.innerHTML = numR
-          ? `<span>📏 ${tr('强约束头身比已启用', 'Active Ratio Lock')}</span><strong>${numR} ${tr('头身', 'Heads')}</strong>`
-          : `<span>📏 ${tr('头身比：保持原画默认比例', 'Ratio: Keep Concept Art')}</span><small style="color:#94a3b8">${tr('可在顶部工具栏切换', 'Set in top toolbar')}</small>`;
-        body.append(ratioBanner);
+        // balance_views: live miniature preview of the custom parametric proportion chart + 1-click live studio opener!
+        const pSpec = ensureGraphProportionSpec(g);
+        const miniCard = document.createElement('div');
+        miniCard.className = 'ng-prop-mini-card';
+        miniCard.title = tr('点击打开可视化体型比例设计器，实时拖动滑块调整头身比、肩宽、腰胯与腿长', 'Click to open Live Body Proportion Studio');
+
+        const miniCvs = document.createElement('canvas');
+        miniCvs.className = 'ng-prop-mini-canvas';
+        miniCvs.width = 160;
+        miniCvs.height = 160;
+        drawProportionMannequinToCanvas(miniCvs, pSpec, {
+          size: 160,
+          theme: pSpec.enabled ? 'light' : 'blueprint',
+          showLabels: false,
+        });
+
+        const miniInfo = document.createElement('div');
+        miniInfo.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:3px';
+        const line1 = document.createElement('strong');
+        line1.style.cssText = 'font-size:11.5px;color:#5eead4';
+        line1.textContent = pSpec.enabled
+          ? `🧍 ${tr('自定义体型强约束已生效', 'Custom Body Proportions Active')}`
+          : `🧍 ${tr('体型：保持原画比例', 'Body: Keep Source Art')}`;
+        const line2 = document.createElement('span');
+        line2.style.cssText = 'font-size:10.5px;color:#e2e8f0';
+        line2.textContent = formatProportionSummary(pSpec, isEn());
+        const line3 = document.createElement('span');
+        line3.style.cssText = 'font-size:10px;color:#38bdf8';
+        line3.textContent = tr('✏️ 点击实时调节肩宽/腰胯/腿长比例图…', '✏️ Click to live-adjust shoulder/hip/leg chart...');
+
+        miniInfo.append(line1, line2, line3);
+        miniCard.append(miniCvs, miniInfo);
+        miniCard.onclick = () => openProportionStudio({autoEnableIfOff: true});
+        body.append(miniCard);
       }
 
       const hintField = document.createElement('label');
@@ -3311,8 +3654,7 @@ export function initNodeCanvas(hooks) {
       const oldMask = g.nodes.find(n => n.type === 'mask_ref')?.data?.image || null;
       const oldStyle = g.nodes.find(n => n.type === 'style_ref')?.data?.image || null;
       const oldRatio = g.nodes.find(n => n.type === 'ratio_ref')?.data?.image || null;
-      const prevHeadRatio = g.headBodyRatio || 'keep';
-      const prevCustomRatio = g.customHeadBodyRatio ?? 6.8;
+      const prevPropSpec = structuredClone(ensureGraphProportionSpec(g));
       const {project: curP, files: curF} = hooks.get();
       const p = structuredClone(curP);
       const f = new Map(curF);
@@ -3360,8 +3702,8 @@ export function initNodeCanvas(hooks) {
       }
 
       p.placements = {};
-      p.nodeGraph.headBodyRatio = prevHeadRatio;
-      p.nodeGraph.customHeadBodyRatio = prevCustomRatio;
+      p.nodeGraph.proportionSpec = prevPropSpec;
+      ensureGraphProportionSpec(p.nodeGraph);
       if (oldSrc) { const s = p.nodeGraph.nodes.find(n => n.type === 'source_image'); if (s) s.data.image = oldSrc; }
       if (oldMask) { const s = p.nodeGraph.nodes.find(n => n.type === 'mask_ref'); if (s) s.data.image = oldMask; }
       if (oldStyle) { const s = p.nodeGraph.nodes.find(n => n.type === 'style_ref'); if (s) s.data.image = oldStyle; }
@@ -3384,32 +3726,28 @@ export function initNodeCanvas(hooks) {
   $('#ngTemplateSelect').onchange = ev => void applyTemplateByKey(ev.target.value);
   $('#ngApplyTemplate').onclick = () => void applyTemplateByKey($('#ngTemplateSelect').value);
   $('#ngGlobalRatioSelect').onchange = ev => {
+    const chosenId = ev.target.value || 'keep';
+    if (chosenId === 'custom') {
+      openProportionStudio({autoEnableIfOff: true});
+      return;
+    }
     const g = currentGraph();
     pushUndo();
-    g.headBodyRatio = ev.target.value || 'keep';
-    if (g.headBodyRatio === 'custom' && !g.customHeadBodyRatio) g.customHeadBodyRatio = 6.8;
+    g.proportionSpec = createProportionSpecFromArchetype(chosenId);
+    ensureGraphProportionSpec(g);
     refreshGlobalRatioSelect();
     hooks.changed();
     render();
-    const numR = resolveNumericHeadBodyRatio(g.headBodyRatio, g.customHeadBodyRatio);
-    window.dispatchEvent(new CustomEvent('morphogem-ratio-changed', {detail: {ratio: numR}}));
+    window.dispatchEvent(new CustomEvent('morphogem-ratio-changed', {
+      detail: {ratio: g.proportionSpec.enabled ? g.proportionSpec.headRatio : null, spec: g.proportionSpec},
+    }));
     hooks.toast(
-      numR
-        ? tr(`📏 已切换强约束头身比：${numR} 头身（导出拆图时自动附带分格标尺图）`, `📏 Ratio locked to ${numR} heads (auto-exports orthographic ruler grid)`)
-        : tr('📏 已恢复为保持原画默认头身比例', '📏 Restored original concept art proportions')
+      g.proportionSpec.enabled
+        ? tr(`📏 已载入体型预设：${formatProportionSummary(g.proportionSpec, false)}（点右侧「🧍调体型」可实时微调肩宽/腿长）`, `📏 Loaded ${formatProportionSummary(g.proportionSpec, true)}`)
+        : tr('📏 已恢复为保持原画默认头身与肩胯比例', '📏 Restored original concept proportions')
     );
   };
-  $('#ngGlobalRatioCustom').onchange = ev => {
-    const g = currentGraph();
-    const v = Math.max(1.5, Math.min(9.5, Number(Number(ev.target.value || 6.8).toFixed(2))));
-    ev.target.value = String(v);
-    pushUndo();
-    g.headBodyRatio = 'custom';
-    g.customHeadBodyRatio = v;
-    hooks.changed();
-    render();
-    window.dispatchEvent(new CustomEvent('morphogem-ratio-changed', {detail: {ratio: v}}));
-  };
+  $('#ngEditProportionBtn').onclick = () => openProportionStudio({autoEnableIfOff: true});
   onLocaleChange(() => {
     refreshTemplateSelect();
     refreshGlobalRatioSelect();

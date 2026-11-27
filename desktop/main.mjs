@@ -968,17 +968,28 @@ app.whenReady().then(async () => {
         return txt.includes('Smart UV') && txt.includes('Retexture');
       })()`);
       wbCheck.smartUvRetexRendered = smartCheck;
-      // Verify v2.2.0 Parametric Head-Body Ratio selector, Mask template, & All-at-Once 4-Up Multi-View Lightbox
+      // Verify v2.2.1 Live Parametric Body Proportion Studio (10 sliders + live canvas), Mask template, & 4-Up Multi-View Lightbox
       const v22Check = await workbenchView.webContents.executeJavaScript(`(() => {
         const ratioSel = document.getElementById('ngGlobalRatioSelect');
         if (ratioSel) {
-          ratioSel.value = '2.5';
+          ratioSel.value = 'blindbox_25';
           ratioSel.dispatchEvent(new Event('change', { bubbles: true }));
         }
+        document.getElementById('ngEditProportionBtn')?.click();
+        const propDlg = document.getElementById('ngProportionStudioDialog');
+        const sliderRows = propDlg ? propDlg.querySelectorAll('#propSliderList .prop-slider-row') : [];
+        // Adjust shoulderWidth (2nd slider row) live to 1.88x
+        const shRange = sliderRows[1]?.querySelector('input[type="range"]');
+        if (shRange) {
+          shRange.value = '1.88';
+          shRange.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        propDlg?.querySelector('#propApplyBtn')?.click();
+        const editBtnTxt = document.getElementById('ngEditProportionBtn')?.textContent || '';
         const tplSel = document.getElementById('ngTemplateSelect');
         tplSel.value = 'mask_custom_split';
         tplSel.dispatchEvent(new Event('change', { bubbles: true }));
-        return Boolean(ratioSel && ratioSel.value === '2.5');
+        return sliderRows.length === 10 && editBtnTxt.includes('1.88');
       })()`);
       await new Promise(r => setTimeout(r, 200));
       const inspectorCheck = await workbenchView.webContents.executeJavaScript(`(() => {

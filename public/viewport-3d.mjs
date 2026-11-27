@@ -5,6 +5,7 @@ import {GLTFLoader} from './vendor/GLTFLoader.js';
 import {FBXLoader} from './vendor/FBXLoader.js';
 import {
   ensureNodeGraph,
+  ensureGraphProportionSpec,
   connectedAssemblyMeshes,
   connectedAssemblyGuide,
   resolveGraphHeadBodyRatio,
@@ -542,8 +543,11 @@ export function initViewport3D(hooks) {
       if (headBodyRatioInput) headBodyRatioInput.value = String(Number(desiredR.toFixed(2)));
       const {project} = hooks.get();
       const g = ensureNodeGraph(project);
-      g.headBodyRatio = 'custom';
-      g.customHeadBodyRatio = Number(desiredR.toFixed(2));
+      const ps = ensureGraphProportionSpec(g);
+      ps.enabled = true;
+      ps.archetype = 'custom';
+      ps.headRatio = Number(desiredR.toFixed(2));
+      ensureGraphProportionSpec(g);
       const desiredTotalH = Math.max(0.1, Number.parseFloat(targetHeightInput?.value || String(project.targetHeight || 1.60)) || 1.60);
       project.targetHeight = desiredTotalH;
       project.placements ??= {};

@@ -11,6 +11,7 @@ import zlib from 'node:zlib';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {findBundledPython} from '../server-blender.mjs';
+import {renderProportionMannequinRgba} from '../public/proportion-mannequin.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PREPARE_GUIDES_PY = path.join(__dirname, 'prepare_guides.py');
@@ -385,16 +386,18 @@ export function renderPureJsMaskOverlayPng(srcDecoded, mskDecoded, mode = 'auto'
   return encodeRgbaPng(w, h, out);
 }
 
-export async function generateRatioRulerGuide({ratio, size = 1024, pose = 't', outPath}) {
-  const ok = await runPythonHelper([
-    'ratio-ruler',
-    '--ratio', String(ratio),
-    '--size', String(size),
-    '--pose', String(pose || 't'),
-    '--out', outPath,
-  ]);
-  if (ok) return outPath;
-  const pngBuf = renderPureJsRatioRulerPng(ratio, size, pose);
+export async function generateRatioRulerGuide({spec = null, ratio = 6.8, size = 1024, pose = 't', outPath}) {
+  const effectiveSpec = spec && typeof spec === 'object'
+    ? {...spec, enabled: true}
+    : {enabled: true, archetype: 'custom', headRatio: ratio, pose};
+  const s = Math.max(256, Math.min(2048, Math.round(size)));
+  const rgba = renderProportionMannequinRgba(effectiveSpec, {
+    size: s,
+    theme: 'light',
+    transparentBg: false,
+    showLabels: true,
+  });
+  const pngBuf = encodeRgbaPng(s, s, new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength));
   await fs.mkdir(path.dirname(outPath), {recursive: true});
   await fs.writeFile(outPath, pngBuf);
   return outPath;
