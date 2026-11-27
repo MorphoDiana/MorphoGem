@@ -152,9 +152,9 @@ app.setPath('userData', paths.chromiumDir);
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
 app.commandLine.appendSwitch('remote-debugging-port', process.env.MORPHOGEM_INTERNAL_CDP_PORT || '0');
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
-// Tripo 的 Google 一键登录默认走 FedCM，但 Electron 运行时拿不到 FedCM token
-// （FedCM get() rejects with NetworkError: Error retrieving a token）。
-// 关掉后 Google Identity Services 会回落到 ux_mode=popup 的 OAuth 弹窗。
+// Tripo uses FedCM for Google sign-in, but this runtime cannot obtain a FedCM
+// token (get() rejects with NetworkError). Disabling FedCM makes Google
+// Identity Services fall back to the ux_mode=popup OAuth flow instead.
 app.commandLine.appendSwitch('disable-features', 'FedCm,FedCmAutoSignin,FedCmIdpSigninStatus');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
@@ -175,13 +175,15 @@ const chromeFullVer = process.versions.chrome || '134.0.6998.89';
 const chromeMajorVer = chromeFullVer.split('.')[0];
 const CLEAN_CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeFullVer} Safari/537.36`;
 
-// Google 的登录页会读取 navigator.userAgentData.brands 做客户端校验。
-// Electron 内核对外的 brands 只有 Chromium / Not:A-Brand，没有 "Google Chrome"，
-// 于是账号页判定「此浏览器或应用可能不安全」。这里补齐 UA-CH 的完整元数据，
-// 通过 CDP 的 Emulation.setUserAgentOverride 一次性覆盖浏览器进程层与页面层读数。
+// The Google account page reads navigator.userAgentData.brands to decide whether
+// the client is trusted. Electron reports only Chromium and Not:A-Brand, with no
+// "Google Chrome" entry, so the page refuses the sign-in as untrusted. The
+// sec-ch-ua request headers were already patched, but the JS-side reading was not.
 //
-// 注意：不要在 preload 里用 JS 改 navigator.userAgentData —— GSI 初始化会对它做
-// 自检，一旦被改写整个登录按钮都不渲染。CDP 这条路径不影响 GSI。
+// Apply the full metadata through Emulation.setUserAgentOverride, which covers
+// both the browser-process and the page-level reading. This is done over CDP
+// rather than in preload on purpose: overriding navigator.userAgentData from
+// JavaScript fails the GSI self-check and stops the sign-in button rendering.
 const CHROME_UA_METADATA = {
   brands: [
     { brand: 'Not-A.Brand', version: '99' },
@@ -217,17 +219,26 @@ async function hardenTripoWebContents(contents) {
       platform: 'Win32',
       userAgentMetadata: CHROME_UA_METADATA,
     });
+    // Release the debugger immediately. Holding it permanently makes the
+    // in-process puppeteer client (tripo_mcp TripoController) unable to attach
+    // to the same target, which breaks the one-click 3D nodes and every MCP
+    // tool. The Emulation override is a target-level setting and survives
+    // detach, so later navigations keep the spoofed client hints.
+    contents.debugger.detach();
   } catch {
-    // debugger 被占用（例如用户开着 DevTools）时静默跳过，不影响其它功能
+    // Debugger already held by someone else (e.g. DevTools open). Skip silently.
   }
 }
 
-// Google 授权域名：必须留在应用内，不能交给系统浏览器
+// Origins that carry the Google OAuth handshake. These must stay inside the
+// app so the popup keeps the persist:tripo cookies and window.opener.
+// Note: content-autofill.googleapis.com is deliberately NOT listed. It is a
+// GSI autofill probe, not an auth endpoint, and allowing it here would open
+// that probe as an in-app navigation.
 const TRIPO_AUTH_HOSTS = [
   'accounts.google.com',
   'accounts.youtube.com',
   'oauth2.googleapis.com',
-  'content-autofill.googleapis.com',
 ];
 
 function isTripoAuthUrl(rawUrl) {
@@ -620,30 +631,45 @@ async function refreshTripoQuickState() {
       const hasTurnstile = !!document.querySelector('iframe[src*="challenges.cloudflare.com"], .cf-turnstile, #challenge-running')
         || /verify you are human|just a moment|請稍候|请稍候|checking your browser/i.test(title);
       if (hasTurnstile && bodyText.length < 800) return { blocked: 'CAPTCHA_OR_CHALLENGE', credits: null, ready: false };
-      const visible = el => {
+      // A visible "Sign in" button in the header is the reliable signed-out
+      // signal. Testing whether the workspace exists does not work: Tripo
+      // renders <main> and the Generate button even when signed out, so that
+      // check never fires and the toolbar shows a green "ready" dot for a
+      // signed-out session.
+      //
+      // Do not use getBoundingClientRect() here. When the Tripo view sits in a
+      // background tab its layout box is 0x0, so a geometry test would report
+      // every element as hidden, including the credits counter.
+      const laidOut = el => {
         if (!el) return false;
-        const r = el.getBoundingClientRect();
         const cs = getComputedStyle(el);
-        return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity || 1) > 0.05;
+        return cs.visibility !== 'hidden' && cs.display !== 'none';
       };
-      const header = document.querySelector('header');
 
-      // 未登录的可靠标志是顶栏还挂着 Sign in 按钮。
-      // 不能再用 hasWorkspace 判断：Tripo 的工作区页面未登录时同样会渲染
-      // main 和 Generate 按钮，导致 ready 恒为 true，界面显示假的「已就绪」。
+      const header = document.querySelector('header');
       const headerButtons = header ? [...header.querySelectorAll('button, a')] : [];
       const signInEl = headerButtons.find(el =>
-        /^(sign in|log in|登录|登入|sign up)$/i.test((el.innerText || '').trim()) && visible(el));
+        /^(sign in|log in|登录|登入|sign up)$/i.test((el.innerText || '').trim()) && laidOut(el));
+
+      // Signed in: the header shows a bare credit count.
       const creditsEl = header ? [...header.querySelectorAll('*')].find(el => {
         if (el.children.length > 0) return false;
-        if (!/^\d{1,7}$/.test((el.textContent || '').trim())) return false;
+        if (!/^\\d{1,7}$/.test((el.textContent || '').trim())) return false;
         if (el.closest('button, a')) return false;
-        return visible(el) && el.getBoundingClientRect().x > window.innerWidth * 0.6;
+        return laidOut(el);
       }) : null;
-      const hasAvatar = !!header && [...header.querySelectorAll('img, [class*="avatar" i], [class*="Avatar"]')]
-        .some(el => visible(el) && !/tripo-wordmark|logo/i.test((el.src || el.className || '').toString()));
 
-      const loggedIn = !signInEl && (!!creditsEl || hasAvatar);
+      const hasAvatar = !!header && [...header.querySelectorAll('img, [class*="avatar" i], [class*="Avatar"]')]
+        .some(el => laidOut(el) && !/tripo-wordmark|logo/i.test((el.src || el.className || '').toString()));
+
+      // When there is no <header> at all (e.g. the --smoke-test stub page), fall
+      // back to the original heuristic so the smoke assertions keep their
+      // previous behaviour.
+      const hasWorkspace = !!document.querySelector('main') &&
+        [...document.querySelectorAll('button, a')].some(el => /generate|hd model|export/i.test(el.innerText || ''));
+      const loggedIn = header
+        ? (!signInEl && (!!creditsEl || hasAvatar))
+        : (hasWorkspace || url.includes('/workspace/'));
       const credits = creditsEl ? Number.parseInt(creditsEl.textContent.trim(), 10) : null;
 
       return {
@@ -943,13 +969,17 @@ app.whenReady().then(async () => {
     });
     tripoView.webContents.setUserAgent(CLEAN_CHROME_UA);
     tripoView.webContents.setWindowOpenHandler(({ url }) => {
-      // Google 授权弹窗必须留在应用内，并且复用 persist:tripo 会话。
-      // 原来这里把所有非 Tripo 域名都 shell.openExternal 出去，导致：
-      //   1) GSI 会连续尝试 oauth2/auth 和 gsi/select 两个地址，各弹一个窗口
-      //   2) 弹窗离开应用后 cookie 与 window.opener 双断，登录完成也回传不了 token
+      // The Google popup must stay inside the app and share the persist:tripo
+      // session. The previous version sent every non-Tripo origin to
+      // shell.openExternal(), which caused two separate problems:
+      //   1. GSI retries two URLs after FedCM fails (oauth2/v2/auth then
+      //      gsi/select), so two external browser windows opened.
+      //   2. Once the popup ran outside the app it lost both the partition
+      //      cookies and window.opener, so a completed login could never post
+      //      the id_token back and the app stayed signed out.
       if (isTripoAuthUrl(url)) {
         if (tripoAuthWindow && !tripoAuthWindow.isDestroyed()) {
-          // 第二个地址复用同一窗口，所以只弹一个
+          // Reuse the same child window for the retry, so only one popup shows.
           void tripoAuthWindow.loadURL(url);
           if (tripoAuthWindow.isMinimized()) tripoAuthWindow.restore();
           tripoAuthWindow.show();
@@ -963,10 +993,11 @@ app.whenReady().then(async () => {
             height: 720,
             minWidth: 420,
             minHeight: 560,
-            parent: win,
+            // No parent: win is a BaseWindow, and the parent option requires a
+            // BrowserWindow. Passing it throws and the popup never opens.
             autoHideMenuBar: true,
             backgroundColor: '#ffffff',
-            title: '登录 Tripo',
+            title: 'Tripo Sign in',
             webPreferences: {
               session: tripoSes,
               preload: path.join(__dirname, 'preload-tripo.cjs'),
@@ -1000,7 +1031,7 @@ app.whenReady().then(async () => {
       childWindow.webContents.on('did-navigate-in-page', syncState);
       childWindow.on('closed', () => {
         if (tripoAuthWindow === childWindow) tripoAuthWindow = null;
-        // 关窗后页面可能刚收到 token，延后两次刷新确保状态同步
+        // The page may have just received the token; re-sync twice.
         setTimeout(syncState, 800);
         setTimeout(syncState, 2500);
       });

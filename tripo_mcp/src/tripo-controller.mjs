@@ -244,10 +244,15 @@ export class TripoController {
       if (hasTurnstile && bodyText.length < 800) {
         return { blocked: 'CAPTCHA_OR_CHALLENGE', url, title };
       }
-      const buttons = [...document.querySelectorAll('button, a')].map(el => (el.innerText || '').trim());
-      const hasLoginBtn = buttons.some(t => /^(sign in|log in|登录|登入)$/i.test(t));
-      const hasWorkspace = !!document.querySelector('main') && buttons.some(t => /generate|hd model|export/i.test(t));
-      if (hasLoginBtn && !hasWorkspace) {
+      // 只看顶栏的 Sign in 按钮。
+      // 不能用「工作区是否存在」判断：未登录时工作区同样渲染 main 和
+      // Generate 按钮，hasWorkspace 会恒为 true，AUTH_REQUIRED 永不触发。
+      const header = document.querySelector('header');
+      const headerButtons = header ? [...header.querySelectorAll('button, a')] : [];
+      const hasLoginBtn = headerButtons.some(
+        el => /^(sign in|log in|登录|登入|sign up)$/i.test((el.innerText || '').trim())
+      );
+      if (hasLoginBtn) {
         return { blocked: 'AUTH_REQUIRED', url, title };
       }
       return { blocked: null, url, title };
