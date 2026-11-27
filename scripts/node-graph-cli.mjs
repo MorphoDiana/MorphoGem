@@ -53,6 +53,7 @@ async function measureFbxNormalization(fbxPath, targetHeight) {
     const outJson = path.join(tmp, 'norm.json');
     const py = `
 import bpy, json, sys
+import numpy as np
 fbx_path, target_h, out_path = sys.argv[sys.argv.index('--') + 1:]
 target_h = float(target_h)
 bpy.ops.object.select_all(action='SELECT')
@@ -62,20 +63,34 @@ bpy.context.view_layer.update()
 meshes = [o for o in bpy.data.objects if o.type == 'MESH']
 if not meshes:
     raise RuntimeError('No mesh in FBX')
-pts = []
+mins = []
+maxs = []
 for o in meshes:
-    mw = o.matrix_world
-    for v in o.data.vertices:
-        p = mw @ v.co
-        # Blender (x, y, z) -> Three.js Y-up (x, z, -y)
-        pts.append((p.x, p.z, -p.y))
-xs = [p[0] for p in pts]; ys = [p[1] for p in pts]; zs = [p[2] for p in pts]
-size_y = max(ys) - min(ys)
+    n = len(o.data.vertices)
+    mw = np.array(o.matrix_world, dtype=np.float64)
+    rot = mw[:3, :3]
+    trans = mw[:3, 3]
+    if n > 0:
+        buf = np.empty(n * 3, dtype=np.float32)
+        o.data.vertices.foreach_get('co', buf)
+        pts = buf.reshape((n, 3)).astype(np.float64) @ rot.T + trans
+    else:
+        pts = np.array([list(c) for c in o.bound_box], dtype=np.float64) @ rot.T + trans
+    # Blender (x, y, z) -> Three.js Y-up (x, z, -y)
+    tx = pts[:, 0]
+    ty = pts[:, 2]
+    tz = -pts[:, 1]
+    mins.append((float(tx.min()), float(ty.min()), float(tz.min())))
+    maxs.append((float(tx.max()), float(ty.max()), float(tz.max())))
+min_x = min(m[0] for m in mins); max_x = max(m[0] for m in maxs)
+min_y = min(m[1] for m in mins); max_y = max(m[1] for m in maxs)
+min_z = min(m[2] for m in mins); max_z = max(m[2] for m in maxs)
+size_y = max_y - min_y
 if size_y < 1e-8:
     raise RuntimeError('Zero height mesh')
-cx = (min(xs) + max(xs)) / 2.0
-cy = (min(ys) + max(ys)) / 2.0
-cz = (min(zs) + max(zs)) / 2.0
+cx = (min_x + max_x) / 2.0
+cy = (min_y + max_y) / 2.0
+cz = (min_z + max_z) / 2.0
 scale = target_h / size_y
 norm = {'scale': scale, 'offset': [-cx * scale, -cy * scale, -cz * scale], 'height': target_h}
 with open(out_path, 'w', encoding='utf-8') as fh:
@@ -108,7 +123,7 @@ with open(out_path, 'w', encoding='utf-8') as fh:
   }
 }
 
-export async function registerMeshCandidatesIntoNode(p, files, nodeId, specs, {replace = true} = {}) {
+export async function registerMeshCandidatesIntoNode(p, files, nodeId, specs, {replace = true, waitPreviewGlb = true} = {}) {
   const g = ensureNodeGraph(p);
   const node = getNode(g, nodeId);
   if (!node || !isMeshNodeType(node.type)) throw Error(`Tripo mesh/retexture node not found: ${nodeId}`);
@@ -138,7 +153,8 @@ export async function registerMeshCandidatesIntoNode(p, files, nodeId, specs, {r
       rawResForPreview.push({name: path.basename(rAbs), data: rBytes});
     }
     if (fbxBytes.byteLength >= PREVIEW_PROXY_MIN_BYTES) {
-      await generatePreviewGlbFromBuffer(doc.sha256, fbxBytes, rawResForPreview).catch(() => {});
+      const previewJob = generatePreviewGlbFromBuffer(doc.sha256, fbxBytes, rawResForPreview).catch(() => {});
+      if (waitPreviewGlb) await previewJob;
     }
     const cand = {
       id: `cand_${crypto.randomUUID().slice(0, 8)}`,

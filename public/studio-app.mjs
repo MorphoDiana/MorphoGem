@@ -13,6 +13,8 @@ import {
 import {
   ensureNodeGraph,
   getNode,
+  incomingEdges,
+  isMeshNodeType,
   nodeInputStamp,
   pruneUnusedGraphDocuments,
 } from './node-graph.mjs';
@@ -294,6 +296,28 @@ window.addEventListener('focus', () => {
   void pollSessionStatus();
 });
 
+async function buildSlimTripoInputArchive(project, filesMap, targetNodeId) {
+  const slimProj = structuredClone(project);
+  const slimFiles = new Map(filesMap);
+  const g = ensureNodeGraph(slimProj);
+  const targetNode = getNode(g, targetNodeId);
+  const keepMeshNodeId = targetNode?.type === 'tripo_retexture'
+    ? (incomingEdges(g, targetNode.id, 'mesh')[0]?.fromNode || null)
+    : null;
+  for (const n of g.nodes) {
+    if (!isMeshNodeType(n.type)) continue;
+    if (n.id === keepMeshNodeId) {
+      const cands = n.data?.candidates || [];
+      const sel = cands.find(c => c.id === n.data?.selectedId) || cands[0] || null;
+      n.data.candidates = sel ? [sel] : [];
+    } else if (n.data) {
+      n.data.candidates = [];
+    }
+  }
+  pruneUnusedGraphDocuments(slimProj, slimFiles);
+  return packProject(slimProj, slimFiles);
+}
+
 // --- Initialize Viewport & Node Canvas ---
 const hooks = {
   get: () => ({project: state.project, files: state.files}),
@@ -383,17 +407,17 @@ const hooks = {
     }
   },
   executeTripoNodes: async (nodeIds, onStatus) => {
+    await flushSaveNow();
     for (const nodeId of nodeIds) {
       onStatus?.(nodeId, tr('正在调用 Tripo 生成 3D…', 'Generating 3D in Tripo...'));
-      await flushSaveNow();
-      const packed = await packProject(state.project, state.files);
+      const slimPacked = await buildSlimTripoInputArchive(state.project, state.files, nodeId);
       const res = await fetch('/api/node-graph/run-tripo', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/octet-stream',
           'X-Node-Id': nodeId,
         },
-        body: packed.bytes,
+        body: slimPacked.bytes,
       });
       if (!res.ok) {
         const errObj = await res.json().catch(() => ({}));
@@ -427,8 +451,8 @@ const hooks = {
         }
       }
       onStatus?.(nodeId, '');
-      await flushSaveNow();
       canvasCtrl.render();
+      await flushSaveNow();
     }
     showToast(tr('🎉 Tripo 3D 部件网格生成并入库完成！可切换至 3D 视口对位。', '🎉 Tripo 3D part meshes generated! Switch to 3D Viewport to assemble.'));
   },

@@ -220,9 +220,13 @@ function layoutViews() {
   if (w < 400 || h < 300) return;
 
   const bodyH = Math.max(120, h - TOOLBAR_HEIGHT);
+  const onTripo = uiState.activeTab === 'tripo';
   toolbarView?.setBounds({ x: 0, y: 0, width: w, height: TOOLBAR_HEIGHT });
-  workbenchView?.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width: w, height: bodyH });
-  tripoView?.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width: w, height: bodyH });
+  // Park the inactive WebContentsView off-screen while preserving identical width/height so
+  // Tripo's WebGL2 DirectComposition surface can NEVER visually cover workbenchView, while
+  // background viewport dimensions (`window.innerWidth` / `getBoundingClientRect()`) stay 100% intact.
+  workbenchView?.setBounds({ x: onTripo ? -30000 : 0, y: TOOLBAR_HEIGHT, width: w, height: bodyH });
+  tripoView?.setBounds({ x: onTripo ? 0 : -30000, y: TOOLBAR_HEIGHT, width: w, height: bodyH });
 }
 
 function scheduleRelayout() {
@@ -235,6 +239,13 @@ function setActiveTab(tab) {
   if (tab !== 'workbench' && tab !== 'tripo') return;
   uiState.activeTab = tab;
   if (win && !win.isDestroyed() && workbenchView && tripoView && toolbarView) {
+    try {
+      win.contentView.removeChildView(workbenchView);
+      win.contentView.removeChildView(tripoView);
+      win.contentView.removeChildView(toolbarView);
+    } catch {
+      // ignore if not attached yet
+    }
     if (tab === 'workbench') {
       win.contentView.addChildView(tripoView);
       win.contentView.addChildView(workbenchView);
@@ -244,6 +255,10 @@ function setActiveTab(tab) {
     }
     win.contentView.addChildView(toolbarView);
     layoutViews();
+    const activeView = tab === 'tripo' ? tripoView : workbenchView;
+    if (!activeView.webContents.isDestroyed()) {
+      activeView.webContents.focus();
+    }
   }
   pushUiState();
 }
@@ -841,9 +856,13 @@ app.whenReady().then(async () => {
     });
     tripoView.webContents.setUserAgent(CLEAN_CHROME_UA);
     tripoView.webContents.setWindowOpenHandler(({ url }) => {
-      if (url.startsWith('https://studio.tripo3d.ai') || url.startsWith('https://accounts.tripo3d.ai')) {
+      if (url.startsWith('https://accounts.tripo3d.ai')) {
         tripoView.webContents.loadURL(url);
         setActiveTab('tripo');
+        return { action: 'deny' };
+      }
+      if (url.startsWith('https://studio.tripo3d.ai')) {
+        tripoView.webContents.loadURL(url);
         return { action: 'deny' };
       }
       shell.openExternal(url);
@@ -1008,6 +1027,41 @@ app.whenReady().then(async () => {
       wbCheck.hasMaskNode = inspectorCheck.hasMaskNode;
       wbCheck.multiViewSlotCount = inspectorCheck.multiViewSlotCount;
       wbCheck.matrixRowCount = inspectorCheck.matrixRowCount;
+
+      // Verify v2.3.1 WebGL2 Tripo <-> Workbench tab switching & off-screen parking without viewport shrinkage
+      await tripoView.webContents.executeJavaScript(`(() => {
+        const cv = document.createElement('canvas');
+        cv.width = 640; cv.height = 480;
+        cv.style.cssText = 'position:fixed;inset:0;width:100%;height:100%';
+        document.body.appendChild(cv);
+        const gl = cv.getContext('webgl2') || cv.getContext('webgl');
+        if (gl) { gl.clearColor(0.1, 0.2, 0.3, 1.0); gl.clear(gl.COLOR_BUFFER_BIT); }
+      })()`);
+      await toolbarView.webContents.executeJavaScript(`document.getElementById('tabTripo')?.click()`);
+      await new Promise(r => setTimeout(r, 90));
+      const onTripoBounds = {
+        activeTab: uiState.activeTab,
+        tripoX: tripoView.getBounds().x,
+        wbX: workbenchView.getBounds().x,
+      };
+      await toolbarView.webContents.executeJavaScript(`document.getElementById('tabWorkbench')?.click()`);
+      await new Promise(r => setTimeout(r, 90));
+      const offscreenTripoMetrics = await tripoView.webContents.executeJavaScript(`(() => {
+        const btn = document.querySelector('button');
+        const r = btn ? btn.getBoundingClientRect() : { width: 0 };
+        return { innerW: window.innerWidth, btnW: r.width, vis: document.visibilityState };
+      })()`);
+      wbCheck.tabSwitchRoundtripOk = (
+        onTripoBounds.activeTab === 'tripo' &&
+        onTripoBounds.tripoX === 0 &&
+        onTripoBounds.wbX <= -10000 &&
+        uiState.activeTab === 'workbench' &&
+        workbenchView.getBounds().x === 0 &&
+        tripoView.getBounds().x <= -10000 &&
+        offscreenTripoMetrics.innerW >= 800 &&
+        offscreenTripoMetrics.btnW > 0
+      );
+
       const sessRes = await fetch(`${workbenchSrv.url}/api/session`, { headers: { host: new URL(workbenchSrv.url).host } });
       const sessJson = await sessRes.json();
       const smokeResult = {
@@ -1032,9 +1086,10 @@ app.whenReady().then(async () => {
         !wbCheck.parametricRatioReady ||
         !wbCheck.hasMaskNode ||
         wbCheck.multiViewSlotCount !== 4 ||
-        wbCheck.matrixRowCount < 2
+        wbCheck.matrixRowCount < 2 ||
+        !wbCheck.tabSwitchRoundtripOk
       ) {
-        throw new Error('Workbench UI layout, node-creation, template-switch, Mask, or 4-up inspector check failed: ' + JSON.stringify(wbCheck));
+        throw new Error('Workbench UI layout, node-creation, template-switch, Mask, 4-up inspector, or tab-switch check failed: ' + JSON.stringify(wbCheck));
       }
       console.log('DESKTOP_SMOKE_OK ' + JSON.stringify(smokeResult));
       setTimeout(() => app.quit(), 250);

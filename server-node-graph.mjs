@@ -281,7 +281,7 @@ export async function handleNodeGraphRequest(req, res, pathname) {
             modelId: finalModelId,
           }];
 
-          await registerMeshCandidatesIntoNode(p, files, meshNode.id, specs, {replace: true});
+          await registerMeshCandidatesIntoNode(p, files, meshNode.id, specs, {replace: true, waitPreviewGlb: false});
           pruneUnusedGraphDocuments(p, files);
           const packed = await packProject(p, files);
           const outBytes = Buffer.from(packed.bytes);
@@ -355,10 +355,10 @@ export async function handleNodeGraphRequest(req, res, pathname) {
         }));
         if (!specs.length) throw Error('Tripo 未返回有效 FBX 导出结果');
 
-        await registerMeshCandidatesIntoNode(p, files, meshNode.id, specs, {replace: true});
+        await registerMeshCandidatesIntoNode(p, files, meshNode.id, specs, {replace: true, waitPreviewGlb: false});
         pruneUnusedGraphDocuments(p, files);
         const packed = await packProject(p, files);
-        const outBytes = Buffer.from(await packed.blob.arrayBuffer());
+        const outBytes = Buffer.from(packed.bytes);
         res.writeHead(200, {
           'Content-Type': 'application/octet-stream',
           'Content-Length': outBytes.length,

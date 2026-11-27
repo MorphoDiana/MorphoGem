@@ -125,15 +125,18 @@ export async function inspectImage(inputBytes, fallbackExt = 'png') {
   throw Error(`Unsupported or corrupted image file (${ext || 'unknown'}). Use PNG, JPEG, or WebP.`);
 }
 
-export function zipStore(entriesObj) {
+export function zipStoreBytes(entriesObj) {
   const clean = {};
   for (const [rawKey, rawVal] of Object.entries(entriesObj || {})) {
     const key = safePath(rawKey);
     const u8 = rawVal instanceof Uint8Array ? rawVal : new Uint8Array(rawVal);
     clean[key] = [u8, {level: 0}];
   }
-  const zipped = zipSync(clean, {level: 0});
-  return new Blob([zipped], {type: 'application/octet-stream'});
+  return zipSync(clean, {level: 0});
+}
+
+export function zipStore(entriesObj) {
+  return new Blob([zipStoreBytes(entriesObj)], {type: 'application/octet-stream'});
 }
 
 export async function unzip(input, {maxBytes = 1536 * 1024 * 1024, maxEntries = 2048} = {}) {
@@ -228,8 +231,8 @@ export async function packProject(project, filesMap = new Map()) {
   }
   entries['project.json'] = enc.encode(JSON.stringify(cloned, null, 2));
 
-  const blob = zipStore(entries);
-  const archiveBytes = new Uint8Array(await blob.arrayBuffer());
+  const archiveBytes = zipStoreBytes(entries);
+  const blob = new Blob([archiveBytes], {type: 'application/octet-stream'});
   const archiveHash = await sha256(archiveBytes);
   return {blob, bytes: archiveBytes, sha256: archiveHash, project: cloned};
 }

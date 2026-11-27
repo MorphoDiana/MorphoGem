@@ -6,10 +6,40 @@ import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {sameOrigin, atomicWrite, sha256Hex} from './server-blender.mjs';
 import {unpackProject} from './public/mgem-project.mjs';
+import {unzipSync} from './public/vendor/fflate.module.js';
 import {computeLockedNodesForViews, buildNodeGraphViewsPrompt} from './public/node-graph-prompts.mjs';
 import {normalizeLocale} from './public/i18n.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+const textDec = new TextDecoder();
+
+/**
+ * Fast O(1) header-only reader for `.mgem` archives: extracts ONLY `project.json` (~4 KB)
+ * instead of unpacking & hashing multi-hundred-MB FBX entries on the Electron main thread!
+ */
+function readProjectManifestFast(rawBuffer) {
+  const u8 = rawBuffer instanceof Uint8Array
+    ? rawBuffer
+    : new Uint8Array(rawBuffer.buffer, rawBuffer.byteOffset, rawBuffer.byteLength);
+  const extracted = unzipSync(u8, {
+    filter(file) {
+      return file.name === 'project.json';
+    },
+  });
+  if (!extracted['project.json']) {
+    throw Error('Invalid .mgem archive: missing project.json.');
+  }
+  const project = JSON.parse(textDec.decode(extracted['project.json']));
+  if (!project || typeof project.id !== 'string' || !project.id.trim()) {
+    throw Error('Invalid project manifest.');
+  }
+  return project;
+}
+
+async function sha256BufferAsync(buf) {
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Buffer.from(digest).toString('hex');
+}
 
 function sanitizeFolderStem(name) {
   const cleaned = String(name || 'character')
@@ -94,15 +124,15 @@ export function createSessionManager(options = {}) {
     return path.join(projectsDir, folderName, 'project.mgem');
   }
 
-  async function saveArchiveBytes(rawBuffer) {
-    const {project} = await unpackProject(rawBuffer);
+  async function saveArchiveBytes(rawBuffer, {validateFull = false} = {}) {
+    const project = validateFull ? (await unpackProject(rawBuffer)).project : readProjectManifestFast(rawBuffer);
     const destFile = await resolveProjectFileForSave(project);
     const projFolder = path.dirname(destFile);
     await fs.mkdir(path.join(projFolder, 'work'), {recursive: true});
     await fs.mkdir(path.join(projFolder, 'images'), {recursive: true});
     await fs.mkdir(path.join(projFolder, 'exports'), {recursive: true});
     await atomicWrite(destFile, rawBuffer);
-    const digest = sha256Hex(rawBuffer);
+    const digest = await sha256BufferAsync(rawBuffer);
     state.active = {
       id: project.id,
       name: project.name,
@@ -126,7 +156,7 @@ export function createSessionManager(options = {}) {
           const st = await fs.stat(mgemPath);
           if (!st.isFile()) continue;
           const buf = await fs.readFile(mgemPath);
-          const {project} = await unpackProject(buf);
+          const project = readProjectManifestFast(buf);
           const nodes = project.nodeGraph?.nodes || [];
           const meshCount = nodes.filter(
             n => (n.type === 'tripo_mesh' || n.type === 'tripo_retexture') && Array.isArray(n.data?.candidates) && n.data.candidates.length > 0
@@ -215,7 +245,7 @@ export function createSessionManager(options = {}) {
       if (pathname === '/api/session/open' && req.method === 'POST') {
         const raw = await readBodyBuffer(req);
         state.request = null;
-        const {active} = await saveArchiveBytes(raw);
+        const {active} = await saveArchiveBytes(raw, {validateFull: true});
         sendJson(200, {ok: true, active, request: null});
         return true;
       }

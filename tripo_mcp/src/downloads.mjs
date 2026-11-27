@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+const inflateRawAsync = promisify(zlib.inflateRaw);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /**
@@ -99,7 +100,7 @@ async function extractZipNative(zipPath, outDir) {
     if (method === 0) {
       outBytes = compSlice;
     } else if (method === 8) {
-      outBytes = zlib.inflateRawSync(compSlice);
+      outBytes = await inflateRawAsync(compSlice);
     } else {
       throw new Error(`UNSUPPORTED_ZIP_METHOD_${method}`);
     }
