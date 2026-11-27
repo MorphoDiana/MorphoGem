@@ -152,6 +152,10 @@ app.setPath('userData', paths.chromiumDir);
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
 app.commandLine.appendSwitch('remote-debugging-port', process.env.MORPHOGEM_INTERNAL_CDP_PORT || '0');
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+// Tripo 的 Google 一键登录默认走 FedCM，但 Electron 运行时拿不到 FedCM token
+// （FedCM get() rejects with NetworkError: Error retrieving a token）。
+// 关掉后 Google Identity Services 会回落到 ux_mode=popup 的 OAuth 弹窗。
+app.commandLine.appendSwitch('disable-features', 'FedCm,FedCmAutoSignin,FedCmIdpSigninStatus');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 
@@ -171,10 +175,76 @@ const chromeFullVer = process.versions.chrome || '134.0.6998.89';
 const chromeMajorVer = chromeFullVer.split('.')[0];
 const CLEAN_CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeFullVer} Safari/537.36`;
 
+// Google 的登录页会读取 navigator.userAgentData.brands 做客户端校验。
+// Electron 内核对外的 brands 只有 Chromium / Not:A-Brand，没有 "Google Chrome"，
+// 于是账号页判定「此浏览器或应用可能不安全」。这里补齐 UA-CH 的完整元数据，
+// 通过 CDP 的 Emulation.setUserAgentOverride 一次性覆盖浏览器进程层与页面层读数。
+//
+// 注意：不要在 preload 里用 JS 改 navigator.userAgentData —— GSI 初始化会对它做
+// 自检，一旦被改写整个登录按钮都不渲染。CDP 这条路径不影响 GSI。
+const CHROME_UA_METADATA = {
+  brands: [
+    { brand: 'Not-A.Brand', version: '99' },
+    { brand: 'Chromium', version: chromeMajorVer },
+    { brand: 'Google Chrome', version: chromeMajorVer },
+  ],
+  fullVersionList: [
+    { brand: 'Not-A.Brand', version: '99.0.0.0' },
+    { brand: 'Chromium', version: chromeFullVer },
+    { brand: 'Google Chrome', version: chromeFullVer },
+  ],
+  fullVersion: chromeFullVer,
+  platform: 'Windows',
+  platformVersion: '15.0.0',
+  architecture: 'x86',
+  model: '',
+  mobile: false,
+  bitness: '64',
+  wow64: false,
+};
+
+const hardenedTripoContents = new WeakSet();
+
+async function hardenTripoWebContents(contents) {
+  if (!contents || contents.isDestroyed()) return;
+  if (hardenedTripoContents.has(contents)) return;
+  hardenedTripoContents.add(contents);
+  try {
+    if (!contents.debugger.isAttached()) contents.debugger.attach('1.3');
+    await contents.debugger.sendCommand('Emulation.setUserAgentOverride', {
+      userAgent: CLEAN_CHROME_UA,
+      acceptLanguage: 'zh-CN,zh;q=0.9,en;q=0.8',
+      platform: 'Win32',
+      userAgentMetadata: CHROME_UA_METADATA,
+    });
+  } catch {
+    // debugger 被占用（例如用户开着 DevTools）时静默跳过，不影响其它功能
+  }
+}
+
+// Google 授权域名：必须留在应用内，不能交给系统浏览器
+const TRIPO_AUTH_HOSTS = [
+  'accounts.google.com',
+  'accounts.youtube.com',
+  'oauth2.googleapis.com',
+  'content-autofill.googleapis.com',
+];
+
+function isTripoAuthUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== 'https:') return false;
+    return TRIPO_AUTH_HOSTS.some(h => u.hostname === h || u.hostname.endsWith('.' + h));
+  } catch {
+    return false;
+  }
+}
+
 let win = null;
 let toolbarView = null;
 let workbenchView = null;
 let tripoView = null;
+let tripoAuthWindow = null;
 let workbenchSrv = null;
 let tripoDaemon = null;
 let jobsModRef = null;
@@ -550,26 +620,43 @@ async function refreshTripoQuickState() {
       const hasTurnstile = !!document.querySelector('iframe[src*="challenges.cloudflare.com"], .cf-turnstile, #challenge-running')
         || /verify you are human|just a moment|請稍候|请稍候|checking your browser/i.test(title);
       if (hasTurnstile && bodyText.length < 800) return { blocked: 'CAPTCHA_OR_CHALLENGE', credits: null, ready: false };
-      const buttons = [...document.querySelectorAll('button, a')].map(el => (el.innerText || '').trim());
-      const hasLogin = buttons.some(t => /^(sign in|log in|登录|登入)$/i.test(t));
-      const hasWorkspace = !!document.querySelector('main') && buttons.some(t => /generate|hd model|export/i.test(t));
-      if (hasLogin && !hasWorkspace) return { blocked: 'AUTH_REQUIRED', credits: null, ready: false };
-      const creditsEl = [...document.querySelectorAll('header *, banner *, nav *, body *')].find(el => {
-        if (el.children.length > 0 || el.closest('button')) return false;
-        const txt = (el.textContent || '').trim();
-        if (!/^\\d{1,7}$/.test(txt)) return false;
+      const visible = el => {
+        if (!el) return false;
         const r = el.getBoundingClientRect();
-        return r.width > 0 && r.y >= 0 && r.y < 64 && r.x > window.innerWidth * 0.65;
-      });
+        const cs = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity || 1) > 0.05;
+      };
+      const header = document.querySelector('header');
+
+      // 未登录的可靠标志是顶栏还挂着 Sign in 按钮。
+      // 不能再用 hasWorkspace 判断：Tripo 的工作区页面未登录时同样会渲染
+      // main 和 Generate 按钮，导致 ready 恒为 true，界面显示假的「已就绪」。
+      const headerButtons = header ? [...header.querySelectorAll('button, a')] : [];
+      const signInEl = headerButtons.find(el =>
+        /^(sign in|log in|登录|登入|sign up)$/i.test((el.innerText || '').trim()) && visible(el));
+      const creditsEl = header ? [...header.querySelectorAll('*')].find(el => {
+        if (el.children.length > 0) return false;
+        if (!/^\d{1,7}$/.test((el.textContent || '').trim())) return false;
+        if (el.closest('button, a')) return false;
+        return visible(el) && el.getBoundingClientRect().x > window.innerWidth * 0.6;
+      }) : null;
+      const hasAvatar = !!header && [...header.querySelectorAll('img, [class*="avatar" i], [class*="Avatar"]')]
+        .some(el => visible(el) && !/tripo-wordmark|logo/i.test((el.src || el.className || '').toString()));
+
+      const loggedIn = !signInEl && (!!creditsEl || hasAvatar);
+      const credits = creditsEl ? Number.parseInt(creditsEl.textContent.trim(), 10) : null;
+
       return {
-        blocked: null,
-        ready: hasWorkspace || url.includes('/workspace/'),
-        credits: creditsEl ? Number.parseInt(creditsEl.textContent.trim(), 10) : null,
+        blocked: signInEl ? 'AUTH_REQUIRED' : null,
+        ready: loggedIn,
+        loggedIn,
+        credits,
+        url,
       };
     })()`, true);
 
     uiState.tripoBlocked = info.blocked;
-    uiState.tripoReady = Boolean(info.ready && !info.blocked);
+    uiState.tripoReady = Boolean(info.loggedIn === true && !info.blocked);
     if (Number.isInteger(info.credits)) uiState.tripoCredits = info.credits;
     pushUiState();
   } catch {
@@ -856,6 +943,40 @@ app.whenReady().then(async () => {
     });
     tripoView.webContents.setUserAgent(CLEAN_CHROME_UA);
     tripoView.webContents.setWindowOpenHandler(({ url }) => {
+      // Google 授权弹窗必须留在应用内，并且复用 persist:tripo 会话。
+      // 原来这里把所有非 Tripo 域名都 shell.openExternal 出去，导致：
+      //   1) GSI 会连续尝试 oauth2/auth 和 gsi/select 两个地址，各弹一个窗口
+      //   2) 弹窗离开应用后 cookie 与 window.opener 双断，登录完成也回传不了 token
+      if (isTripoAuthUrl(url)) {
+        if (tripoAuthWindow && !tripoAuthWindow.isDestroyed()) {
+          // 第二个地址复用同一窗口，所以只弹一个
+          void tripoAuthWindow.loadURL(url);
+          if (tripoAuthWindow.isMinimized()) tripoAuthWindow.restore();
+          tripoAuthWindow.show();
+          tripoAuthWindow.focus();
+          return { action: 'deny' };
+        }
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: 520,
+            height: 720,
+            minWidth: 420,
+            minHeight: 560,
+            parent: win,
+            autoHideMenuBar: true,
+            backgroundColor: '#ffffff',
+            title: '登录 Tripo',
+            webPreferences: {
+              session: tripoSes,
+              preload: path.join(__dirname, 'preload-tripo.cjs'),
+              sandbox: true,
+              contextIsolation: true,
+              nodeIntegration: false,
+            },
+          },
+        };
+      }
       if (url.startsWith('https://accounts.tripo3d.ai')) {
         tripoView.webContents.loadURL(url);
         setActiveTab('tripo');
@@ -867,6 +988,22 @@ app.whenReady().then(async () => {
       }
       shell.openExternal(url);
       return { action: 'deny' };
+    });
+
+    tripoView.webContents.on('did-create-window', (childWindow) => {
+      tripoAuthWindow = childWindow;
+      try { childWindow.setMenuBarVisibility(false); } catch { /* ignore */ }
+      childWindow.webContents.setUserAgent(CLEAN_CHROME_UA);
+      void hardenTripoWebContents(childWindow.webContents);
+      const syncState = () => { void refreshTripoQuickState(); };
+      childWindow.webContents.on('did-navigate', syncState);
+      childWindow.webContents.on('did-navigate-in-page', syncState);
+      childWindow.on('closed', () => {
+        if (tripoAuthWindow === childWindow) tripoAuthWindow = null;
+        // 关窗后页面可能刚收到 token，延后两次刷新确保状态同步
+        setTimeout(syncState, 800);
+        setTimeout(syncState, 2500);
+      });
     });
 
     workbenchView.webContents.setWindowOpenHandler(({ url }) => {
@@ -896,6 +1033,7 @@ app.whenReady().then(async () => {
 
     tripoView.webContents.on('did-finish-load', () => { void refreshTripoQuickState(); });
     tripoView.webContents.on('did-navigate-in-page', () => { void refreshTripoQuickState(); });
+    void hardenTripoWebContents(tripoView.webContents);
 
     const cdp = await readInternalCdpWsEndpoint();
     const daemonMod = await import(pathToFileURL(path.join(paths.appCoreDir, 'tripo_mcp', 'daemon.mjs')).href);
