@@ -255,6 +255,11 @@ export async function loginTripoViaExternalBrowser(options = {}) {
   const profileDir = options.profileDir
     || path.join(options.userDataDir || os.tmpdir(), 'tripo-login-profile');
   fs.mkdirSync(profileDir, { recursive: true });
+  try {
+    fs.rmSync(path.join(profileDir, 'DevToolsActivePort'), { force: true });
+  } catch {
+    // ignore
+  }
 
   const args = [
     `--remote-debugging-port=${requestedPort}`,
@@ -269,13 +274,16 @@ export async function loginTripoViaExternalBrowser(options = {}) {
 
   onStatus({ phase: 'launching', browser: browser.name });
   const child = spawn(browser.exe, args, { stdio: 'ignore', detached: false });
+  let childExited = false;
+  child.once('exit', () => { childExited = true; });
+  child.once('error', () => { childExited = true; });
 
   let cdp = null;
   try {
     const info = await waitForCdpDynamic(requestedPort, profileDir, Date.now() + 45000);
-    if (!info) {
+    if (!info || childExited) {
       throw Object.assign(
-        new Error('No Chrome or Edge found. Install either one and retry.'),
+        new Error('外部浏览器未能开启调试端口或已提前关闭'),
         { code: 'BROWSER_LAUNCH_FAILED' }
       );
     }
@@ -290,7 +298,13 @@ export async function loginTripoViaExternalBrowser(options = {}) {
     let harvest = [];
 
     while (Date.now() < deadline) {
-      await sleep(2000);
+      if (childExited) {
+        throw Object.assign(new Error('外部登录浏览器窗口已关闭'), { code: 'BROWSER_CLOSED' });
+      }
+      await sleep(1500);
+      if (childExited) {
+        throw Object.assign(new Error('外部登录浏览器窗口已关闭'), { code: 'BROWSER_CLOSED' });
+      }
 
       // 每轮都取一次 cookie：ory_kratos_session 出现了就说明登录成功，
       // 这比等页面渲染出积分数字可靠得多。
