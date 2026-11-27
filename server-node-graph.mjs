@@ -36,7 +36,7 @@ function callTripoDaemon(port, token, action, params) {
           'Content-Length': body.length,
           'x-tripo-token': token,
         },
-        timeout: 25 * 60 * 1000,
+        timeout: 45 * 60 * 1000,
       },
       res => {
         const chunks = [];
@@ -183,6 +183,87 @@ export async function handleNodeGraphRequest(req, res, pathname) {
       await atomicWrite(file, Buffer.from(JSON.stringify(clean, null, 2), 'utf8'));
       sendJson(200, {ok: true, ...clean});
       return true;
+    }
+
+    // 0b. Query recent ready 3D models from the live Tripo Studio workspace (zero-credit recovery)
+    if (pathname === '/api/node-graph/tripo-assets' && req.method === 'GET') {
+      const daemon = await ensureTripoDaemonState();
+      const st = await callTripoDaemon(daemon.port, daemon.token, 'status', {maxAssets: 16});
+      const urlUuidMatch = String(st?.url || '').match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+      const activeModelId = urlUuidMatch ? urlUuidMatch[1].toLowerCase() : '';
+      sendJson(200, {
+        ok: true,
+        activeModelId,
+        exportReady: Boolean(st?.exportReady),
+        credits: st?.credits ?? null,
+        assets: Array.isArray(st?.assets) ? st.assets : [],
+      });
+      return true;
+    }
+
+    // 0c. Export an already-generated Tripo model directly into a node without spending credits
+    if (pathname === '/api/node-graph/import-tripo-model' && req.method === 'POST') {
+      const nodeId = req.headers['x-node-id'];
+      if (!nodeId) throw Error('缺少目标节点 ID');
+      const rawModelInput = String(req.headers['x-model-id'] || '').trim();
+      const rawKit = await readBodyBuffer(req);
+      const {project: p, files} = await unpackProject(rawKit);
+      const g = ensureNodeGraph(p);
+      const meshNode = getNode(g, nodeId);
+      if (!meshNode || !isMeshNodeType(meshNode.type)) throw Error('目标 Tripo 节点不存在');
+
+      const daemon = await ensureTripoDaemonState();
+      let targetModelId = '';
+      const explicitMatch = rawModelInput.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+      if (explicitMatch) {
+        targetModelId = explicitMatch[1].toLowerCase();
+      } else {
+        const st = await callTripoDaemon(daemon.port, daemon.token, 'status', {maxAssets: 16});
+        const urlMatch = String(st?.url || '').match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+        const readyAssets = (st?.assets || []).filter(a => a.status === 'ready');
+        targetModelId = (urlMatch && st?.exportReady ? urlMatch[1].toLowerCase() : '')
+          || readyAssets[0]?.modelId
+          || '';
+      }
+      if (!targetModelId) {
+        throw Error('未在 Tripo 工作区检测到可导出的已生成模型，请先在 Tripo 生成完成或手动点开目标模型后再试');
+      }
+
+      const pvNode = resolveUpstreamViewsNode(g, meshNode.id);
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ng-import-tripo-'));
+      try {
+        const outModelsDir = path.join(tmp, 'exported');
+        const expRes = await callTripoDaemon(daemon.port, daemon.token, 'export', {
+          modelIds: [targetModelId],
+          format: 'FBX',
+          preset: 'Blender',
+          textureResolution: meshNode.params?.textureSize === 8192 ? '8k' : '4k',
+          outputDir: outModelsDir,
+        });
+        const items = expRes?.items || [];
+        if (!items.length || !items[0]?.fbx) {
+          throw Error('Tripo 未返回有效 FBX 导出文件，请确认该模型已在 Tripo 生成完毕');
+        }
+        const specs = items.map((item, idx) => ({
+          fbx: item.fbx,
+          name: `${pvNode?.params?.partName || meshNode.params?.title || 'part'}_imported${items.length > 1 ? `_${idx + 1}` : ''}.fbx`,
+          resources: item.resources || [],
+          modelId: item.modelId || targetModelId,
+        }));
+        await registerMeshCandidatesIntoNode(p, files, meshNode.id, specs, {replace: true, waitPreviewGlb: false});
+        pruneUnusedGraphDocuments(p, files);
+        const packed = await packProject(p, files);
+        const outBytes = Buffer.from(packed.bytes);
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': outBytes.length,
+          'Cache-Control': 'no-store',
+        });
+        res.end(outBytes);
+        return true;
+      } finally {
+        await fs.rm(tmp, {recursive: true, force: true}).catch(() => {});
+      }
     }
 
     // 1. Direct local execution of a `tripo_mesh` or `tripo_retexture` node using the embedded Tripo Studio browser

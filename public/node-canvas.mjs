@@ -348,6 +348,34 @@ export function initNodeCanvas(hooks) {
   `;
   document.body.append(propStudioDlg);
 
+  // Zero-Credit Import Existing Tripo Model Modal
+  const importTripoDlg = document.createElement('dialog');
+  importTripoDlg.id = 'ngImportTripoDialog';
+  importTripoDlg.style.maxWidth = '560px';
+  importTripoDlg.style.width = '92vw';
+  importTripoDlg.innerHTML = `
+    <div class="dialog-top">
+      <h2 id="impTripoTitle">📥 从 Tripo 直接导入已生成模型（0 积分免重跑）</h2>
+      <button type="button" id="impTripoCloseX">×</button>
+    </div>
+    <p id="impTripoDesc" style="font-size:12px;color:#94a3b8;margin:6px 0 10px;line-height:1.5">
+      已在 Tripo 生成完毕但未自动入库的部件，可直接从下方列表选中并一键导出 FBX 接入当前节点（不消耗任何积分）：
+    </p>
+    <div id="impTripoAssetList" style="display:flex;flex-direction:column;gap:7px;max-height:310px;overflow-y:auto;padding:4px 2px;margin-bottom:10px"></div>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:11.5px;color:#cbd5e1;margin-bottom:12px">
+      <span id="impTripoManualLbl">或直接粘贴 Tripo 模型链接 / UUID（留空则使用上方选中的模型）：</span>
+      <input type="text" id="impTripoManualInput" placeholder="https://studio.tripo3d.ai/workspace/generate/xxxxxxxx-xxxx-..." style="background:#0f172a;border:1px solid #334155;border-radius:7px;padding:7px 10px;color:#f8fafc;font-size:12px">
+    </label>
+    <div class="dialog-actions" style="justify-content:space-between;gap:8px">
+      <button type="button" id="impTripoRefreshBtn" class="ng-btn">↻ 刷新 Tripo 列表</button>
+      <div style="display:flex;gap:8px">
+        <button type="button" id="impTripoCancelBtn" class="ng-btn">取消</button>
+        <button type="button" id="impTripoConfirmBtn" class="ng-btn emerald">📥 立即导出并接入此节点</button>
+      </div>
+    </div>
+  `;
+  document.body.append(importTripoDlg);
+
   // Save Template / Save Branch Dialog
   const savePresetDlg = document.createElement('dialog');
   savePresetDlg.id = 'ngSavePresetDialog';
@@ -3276,6 +3304,19 @@ export function initNodeCanvas(hooks) {
           : '▶ 直接在 Tripo 生成此 3D 部件';
       runBtn.onclick = () => void runTripoNodes([node.id]);
       body.append(runBtn);
+
+      const impBtn = document.createElement('button');
+      impBtn.type = 'button';
+      impBtn.className = 'ng-btn cyan ng-import-tripo-btn';
+      impBtn.style.justifyContent = 'center';
+      impBtn.disabled = thisTripoBusy;
+      impBtn.title = tr(
+        '若该部件已在 Tripo 生成完毕，可不重跑、0 积分直接抓取导出并接入此节点',
+        'Export an already-generated model directly from Tripo Studio into this node (0 credits)'
+      );
+      impBtn.textContent = tr('📥 从 Tripo 导入已生成模型（免重跑）', '📥 Import Ready Model from Tripo');
+      impBtn.onclick = () => void openImportTripoDialog(node.id);
+      body.append(impBtn);
       return body;
     }
 
@@ -3357,6 +3398,19 @@ export function initNodeCanvas(hooks) {
           : tr('▶ 执行 UV 重展开与上色', '▶ Run Smart UV & Retexture');
       runBtn.onclick = () => void runTripoNodes([node.id]);
       body.append(runBtn);
+
+      const impBtn = document.createElement('button');
+      impBtn.type = 'button';
+      impBtn.className = 'ng-btn cyan ng-import-tripo-btn';
+      impBtn.style.justifyContent = 'center';
+      impBtn.disabled = busy;
+      impBtn.title = tr(
+        '若该部件已在 Tripo 生成完毕，可不重跑、0 积分直接抓取导出并接入此节点',
+        'Export an already-generated model directly from Tripo Studio into this node (0 credits)'
+      );
+      impBtn.textContent = tr('📥 从 Tripo 导入已生成模型（免重跑）', '📥 Import Ready Model from Tripo');
+      impBtn.onclick = () => void openImportTripoDialog(node.id);
+      body.append(impBtn);
       return body;
     }
 
@@ -3412,6 +3466,9 @@ export function initNodeCanvas(hooks) {
   function updateStatusesOnly() {
     const g = currentGraph();
     for (const n of g.nodes) {
+      if (!tripoExecutingIds.has(n.id) && n.data?.runtimeStatus) {
+        n.data.runtimeStatus = '';
+      }
       const card = nodesLayer.querySelector(`.ng-node[data-node-id="${n.id}"]`);
       if (!card) continue;
       const st = nodeStatus(g, n.id);
@@ -3525,6 +3582,9 @@ export function initNodeCanvas(hooks) {
         head.setPointerCapture(ev.pointerId);
       };
 
+      if (!tripoExecutingIds.has(node.id) && node.data?.runtimeStatus) {
+        node.data.runtimeStatus = '';
+      }
       const st = nodeStatus(g, node.id);
       const statusRow = document.createElement('div');
       statusRow.className = 'ng-status-row';
@@ -4172,6 +4232,11 @@ export function initNodeCanvas(hooks) {
         updateStatusesOnly();
         syncExecBanner();
       });
+    } catch (err) {
+      hooks.toast(tr(
+        `❌ Tripo 节点执行中断：${err?.message || String(err)}（若 Tripo 已生成完毕，可点击节点上的「📥 从 Tripo 导入已生成模型」免积分直接取回！）`,
+        `❌ Tripo execution interrupted: ${err?.message || String(err)} (Click "📥 Import Ready Model from Tripo" on the node if already generated!)`
+      ), 7200);
     } finally {
       const g = currentGraph();
       for (const id of queue) {
@@ -4183,6 +4248,163 @@ export function initNodeCanvas(hooks) {
       render();
     }
   }
+
+  let activeImportTargetNodeId = '';
+  let selectedImportModelId = '';
+
+  async function importTripoIntoNode(nodeId, modelId) {
+    if (!nodeId || tripoExecutingIds.has(nodeId) || isNodeLocked(nodeId)) return;
+    tripoExecutingIds.add(nodeId);
+    recomputeTripoLocks();
+    render();
+    try {
+      await hooks.importTripoModelToNode(nodeId, modelId, (nid, statusMsg) => {
+        const g = currentGraph();
+        const n = getNode(g, nid);
+        if (n) n.data.runtimeStatus = statusMsg;
+        updateStatusesOnly();
+        syncExecBanner();
+      });
+    } catch (err) {
+      hooks.toast(`❌ ${err?.message || String(err)}`, 6500);
+    } finally {
+      tripoExecutingIds.delete(nodeId);
+      const g = currentGraph();
+      const n = getNode(g, nodeId);
+      if (n) n.data.runtimeStatus = '';
+      recomputeTripoLocks();
+      render();
+    }
+  }
+
+  async function populateImportTripoList() {
+    const listEl = importTripoDlg.querySelector('#impTripoAssetList');
+    const confirmBtn = importTripoDlg.querySelector('#impTripoConfirmBtn');
+    listEl.innerHTML = `<div style="padding:18px;text-align:center;color:#94a3b8;font-size:12px">${tr('⏳ 正在读取 Tripo 工作区最近生成的模型列表…', '⏳ Reading recent models from Tripo Studio...')}</div>`;
+    confirmBtn.disabled = false;
+    try {
+      const data = await hooks.fetchTripoAssets();
+      const assets = Array.isArray(data?.assets) ? data.assets : [];
+      const activeId = data?.activeModelId || '';
+      const merged = [...assets];
+      if (activeId && !merged.some(a => a.modelId === activeId)) {
+        merged.unshift({
+          modelId: activeId,
+          status: data?.exportReady ? 'ready' : 'generating',
+          text: tr('当前 Tripo 窗口打开的模型', 'Currently open model in Tripo'),
+          thumbnail: null,
+        });
+      }
+      if (!merged.length) {
+        listEl.innerHTML = `<div style="padding:16px;border:1px dashed #334155;border-radius:8px;color:#fbbf24;font-size:12px;line-height:1.5">${tr('未在右侧列表读取到模型卡片。你可以切到「Tripo 账号工作区」点开目标模型，或在下方粘贴其链接后直接点击导出！', 'No asset cards detected in list. Open the model in the Tripo tab or paste its URL below, then click Export!')}</div>`;
+        selectedImportModelId = '';
+        return;
+      }
+      const firstReady = merged.find(a => a.modelId === activeId && a.status === 'ready')
+        || merged.find(a => a.status === 'ready')
+        || merged[0];
+      selectedImportModelId = firstReady?.modelId || '';
+
+      const renderCards = () => {
+        listEl.innerHTML = '';
+        merged.forEach((asset, idx) => {
+          const isSel = asset.modelId === selectedImportModelId;
+          const isActive = asset.modelId === activeId;
+          const isReady = asset.status === 'ready';
+          const row = document.createElement('div');
+          row.style.cssText = [
+            'display:flex',
+            'align-items:center',
+            'gap:10px',
+            'padding:8px 10px',
+            'border-radius:9px',
+            'cursor:pointer',
+            `background:${isSel ? 'rgba(16,185,129,0.16)' : '#0f172a'}`,
+            `border:1.5px solid ${isSel ? '#10b981' : '#1e293b'}`,
+          ].join(';');
+
+          const thumb = document.createElement('div');
+          thumb.style.cssText = 'width:48px;height:48px;border-radius:7px;background:#1e293b;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:18px';
+          if (asset.thumbnail) {
+            const img = document.createElement('img');
+            img.src = asset.thumbnail;
+            img.alt = '';
+            img.style.cssText = 'width:100%;height:100%;object-fit:cover';
+            thumb.append(img);
+          } else {
+            thumb.textContent = '🧊';
+          }
+
+          const info = document.createElement('div');
+          info.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:3px';
+          const topLine = document.createElement('div');
+          topLine.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;font-weight:600;color:#f8fafc';
+          topLine.textContent = idx === 0
+            ? tr(`#1 最新模型 (${asset.modelId.slice(0, 8)})`, `#1 Newest (${asset.modelId.slice(0, 8)})`)
+            : `#${idx + 1} (${asset.modelId.slice(0, 8)})`;
+          if (isActive) {
+            const curBadge = document.createElement('span');
+            curBadge.style.cssText = 'font-size:10.5px;padding:1px 6px;border-radius:999px;background:rgba(56,189,248,0.22);border:1px solid #38bdf8;color:#bae6fd';
+            curBadge.textContent = tr('当前预览中', 'Currently Open');
+            topLine.append(curBadge);
+          }
+          const stBadge = document.createElement('span');
+          stBadge.style.cssText = isReady
+            ? 'font-size:10.5px;padding:1px 6px;border-radius:999px;background:rgba(34,197,94,0.2);color:#86efac'
+            : 'font-size:10.5px;padding:1px 6px;border-radius:999px;background:rgba(245,158,11,0.2);color:#fde68a';
+          stBadge.textContent = isReady ? tr('✓ 已生成就绪', '✓ Ready') : tr('⏳ 生成中', '⏳ Generating');
+          topLine.append(stBadge);
+
+          const subLine = document.createElement('div');
+          subLine.style.cssText = 'font-size:11px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+          subLine.textContent = `UUID: ${asset.modelId}${asset.text ? ` · ${asset.text}` : ''}`;
+          info.append(topLine, subLine);
+
+          row.append(thumb, info);
+          row.onclick = () => {
+            selectedImportModelId = asset.modelId;
+            renderCards();
+          };
+          listEl.append(row);
+        });
+      };
+      renderCards();
+    } catch (err) {
+      listEl.innerHTML = `<div style="padding:14px;border:1px solid rgba(239,68,68,0.4);border-radius:8px;color:#fca5a5;font-size:12px">${err?.message || String(err)}</div>`;
+    }
+  }
+
+  async function openImportTripoDialog(nodeId) {
+    const g = currentGraph();
+    const targetNode = getNode(g, nodeId);
+    if (!targetNode) return;
+    activeImportTargetNodeId = nodeId;
+    selectedImportModelId = '';
+    const manualInp = importTripoDlg.querySelector('#impTripoManualInput');
+    if (manualInp) manualInp.value = '';
+    const titleEl = importTripoDlg.querySelector('#impTripoTitle');
+    if (titleEl) {
+      titleEl.textContent = tr(
+        `📥 导入已生成模型 → ${targetNode.params?.title || '3D 节点'}（0 积分）`,
+        `📥 Import Ready Model → ${targetNode.params?.title || '3D Node'} (0 Credits)`
+      );
+    }
+    importTripoDlg.showModal();
+    await populateImportTripoList();
+  }
+
+  importTripoDlg.querySelector('#impTripoCloseX').onclick = () => importTripoDlg.close();
+  importTripoDlg.querySelector('#impTripoCancelBtn').onclick = () => importTripoDlg.close();
+  importTripoDlg.querySelector('#impTripoRefreshBtn').onclick = () => void populateImportTripoList();
+  importTripoDlg.querySelector('#impTripoConfirmBtn').onclick = () => {
+    const nid = activeImportTargetNodeId;
+    const manualVal = (importTripoDlg.querySelector('#impTripoManualInput')?.value || '').trim();
+    const chosenId = manualVal || selectedImportModelId || '';
+    importTripoDlg.close();
+    if (nid) {
+      void importTripoIntoNode(nid, chosenId);
+    }
+  };
 
   async function applyTemplateByKey(presetKey) {
     const sel = $('#ngTemplateSelect');
@@ -4340,6 +4562,11 @@ export function initNodeCanvas(hooks) {
   });
   $('#ngRunAllTripo').onclick = async () => {
     const g = currentGraph();
+    for (const n of g.nodes) {
+      if (!tripoExecutingIds.has(n.id) && n.data?.runtimeStatus) {
+        n.data.runtimeStatus = '';
+      }
+    }
     const stage1Ids = g.nodes
       .filter(n => n.type === 'tripo_mesh' && nodeStatus(g, n.id).state === 'dirty')
       .map(n => n.id);

@@ -318,6 +318,36 @@ async function buildSlimTripoInputArchive(project, filesMap, targetNodeId) {
   return packProject(slimProj, slimFiles);
 }
 
+async function mergeReturnedMeshArchiveIntoState(nodeId, retBytes) {
+  const {project: retProj, files: retFiles} = await unpackProject(retBytes);
+  const retMeshNode = getNode(ensureNodeGraph(retProj), nodeId);
+  const liveMeshNode = getNode(ensureNodeGraph(state.project), nodeId);
+  if (retMeshNode && liveMeshNode) {
+    liveMeshNode.data.candidates = structuredClone(retMeshNode.data.candidates || []);
+    liveMeshNode.data.selectedId = retMeshNode.data.selectedId;
+    liveMeshNode.data.completedStamp = retMeshNode.data.completedStamp;
+    liveMeshNode.data.runtimeStatus = '';
+    const existingPaths = new Set((state.project.documents || []).map(d => d.path));
+    for (const c of liveMeshNode.data.candidates) {
+      const allRefs = [c, ...(c.resources || [])];
+      for (const ref of allRefs) {
+        if (ref?.path && retFiles.has(ref.path)) {
+          state.files.set(ref.path, retFiles.get(ref.path));
+          if (!existingPaths.has(ref.path)) {
+            state.project.documents ??= [];
+            state.project.documents.push({path: ref.path, sha256: ref.sha256});
+            existingPaths.add(ref.path);
+          }
+        }
+      }
+    }
+    if (retProj.placements?.[nodeId]) {
+      state.project.placements ??= {};
+      state.project.placements[nodeId] ??= structuredClone(retProj.placements[nodeId]);
+    }
+  }
+}
+
 // --- Initialize Viewport & Node Canvas ---
 const hooks = {
   get: () => ({project: state.project, files: state.files}),
@@ -406,6 +436,37 @@ const hooks = {
       showToast(err.message || String(err));
     }
   },
+  fetchTripoAssets: async () => {
+    const res = await fetch('/api/node-graph/tripo-assets');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Error(data.error || `Failed to query Tripo assets (${res.status})`);
+    return data;
+  },
+  importTripoModelToNode: async (nodeId, modelId, onStatus) => {
+    await flushSaveNow();
+    onStatus?.(nodeId, tr('正在从 Tripo 导出已生成模型…', 'Exporting ready model from Tripo...'));
+    const slimPacked = await buildSlimTripoInputArchive(state.project, state.files, nodeId);
+    const headers = {
+      'Content-Type': 'application/octet-stream',
+      'X-Node-Id': nodeId,
+    };
+    if (modelId) headers['X-Model-Id'] = String(modelId).trim();
+    const res = await fetch('/api/node-graph/import-tripo-model', {
+      method: 'POST',
+      headers,
+      body: slimPacked.bytes,
+    });
+    if (!res.ok) {
+      const errObj = await res.json().catch(() => ({}));
+      throw Error(errObj.error || `Tripo import failed (${res.status})`);
+    }
+    const retBytes = new Uint8Array(await res.arrayBuffer());
+    await mergeReturnedMeshArchiveIntoState(nodeId, retBytes);
+    onStatus?.(nodeId, '');
+    canvasCtrl.render();
+    await flushSaveNow();
+    showToast(tr('🎉 已直接从 Tripo 导入模型并接入合体节点（0 积分消耗）！', '🎉 Imported ready 3D model from Tripo (0 credits spent)!'));
+  },
   executeTripoNodes: async (nodeIds, onStatus) => {
     await flushSaveNow();
     for (const nodeId of nodeIds) {
@@ -424,32 +485,7 @@ const hooks = {
         throw Error(errObj.error || `Tripo generation failed (${res.status})`);
       }
       const retBytes = new Uint8Array(await res.arrayBuffer());
-      const {project: retProj, files: retFiles} = await unpackProject(retBytes);
-      const retMeshNode = getNode(ensureNodeGraph(retProj), nodeId);
-      const liveMeshNode = getNode(ensureNodeGraph(state.project), nodeId);
-      if (retMeshNode && liveMeshNode) {
-        liveMeshNode.data.candidates = structuredClone(retMeshNode.data.candidates || []);
-        liveMeshNode.data.selectedId = retMeshNode.data.selectedId;
-        liveMeshNode.data.completedStamp = retMeshNode.data.completedStamp;
-        const existingPaths = new Set((state.project.documents || []).map(d => d.path));
-        for (const c of liveMeshNode.data.candidates) {
-          const allRefs = [c, ...(c.resources || [])];
-          for (const ref of allRefs) {
-            if (ref?.path && retFiles.has(ref.path)) {
-              state.files.set(ref.path, retFiles.get(ref.path));
-              if (!existingPaths.has(ref.path)) {
-                state.project.documents ??= [];
-                state.project.documents.push({path: ref.path, sha256: ref.sha256});
-                existingPaths.add(ref.path);
-              }
-            }
-          }
-        }
-        if (retProj.placements?.[nodeId]) {
-          state.project.placements ??= {};
-          state.project.placements[nodeId] ??= structuredClone(retProj.placements[nodeId]);
-        }
-      }
+      await mergeReturnedMeshArchiveIntoState(nodeId, retBytes);
       onStatus?.(nodeId, '');
       canvasCtrl.render();
       await flushSaveNow();

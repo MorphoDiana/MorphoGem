@@ -161,6 +161,11 @@ export async function startTripoRpcDaemon({
     }
   });
 
+  srv.requestTimeout = 0;
+  srv.headersTimeout = 0;
+  srv.timeout = 0;
+  srv.keepAliveTimeout = 65000;
+
   await new Promise((resolve, reject) => {
     srv.once('error', reject);
     srv.listen(0, '127.0.0.1', resolve);

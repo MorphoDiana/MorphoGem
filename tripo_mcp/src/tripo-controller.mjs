@@ -322,13 +322,14 @@ export class TripoController {
         if (!modelId || seenIds.has(modelId)) continue;
         seenIds.add(modelId);
         const text = (a.innerText || '').trim().replace(/\s+/g, ' ');
-        const hasCancelBtn = [...a.querySelectorAll('button')].some(b => /cancel/i.test(b.innerText || ''));
+        const hasCancelBtn = [...a.querySelectorAll('button')].some(b => /cancel|取消/i.test(b.innerText || ''));
+        const hasProgressPct = /\b\d{1,2}\s*%/.test(text);
         const img = a.querySelector('img');
         assetLinks.push({
           modelId,
           href: new URL(href, location.origin).href,
           text,
-          status: hasCancelBtn || /generating|queued/i.test(text) ? 'generating' : 'ready',
+          status: hasCancelBtn || hasProgressPct || /generating|queued|生成中|排队中/i.test(text) ? 'generating' : 'ready',
           thumbnail: img ? img.src : null,
         });
       }
@@ -366,9 +367,28 @@ export class TripoController {
     }
   }
 
+  async #scrollAssetsPanelToTop(page) {
+    try {
+      await page.evaluate(() => {
+        for (const el of document.querySelectorAll('*')) {
+          if (el.scrollTop > 0 && el.scrollHeight > el.clientHeight + 20) {
+            const r = el.getBoundingClientRect();
+            if (r.x > window.innerWidth * 0.5 && r.width > 80) {
+              el.scrollTop = 0;
+            }
+          }
+        }
+      });
+      await sleep(180);
+    } catch {
+      // ignore transient context reset
+    }
+  }
+
   async status({ screenshotPath, maxAssets = 10 } = {}) {
     return this.#withLock(async () => {
       const page = await this.getTripoPage({ navigateIfNeeded: false });
+      await this.#scrollAssetsPanelToTop(page);
       const snap = await this.#readWorkspaceSnapshot(page);
       if (Number.isInteger(maxAssets) && maxAssets > 0 && snap.assets.length > maxAssets) {
         snap.totalAssetsInPanel = snap.assets.length;
@@ -986,6 +1006,7 @@ export class TripoController {
       // In Smart Mesh mode, generating 1 or 4 costs the exact same credits and Tripo outputs 4 variants per batch:
       // - When smartMesh=true and count=1 (default), ensure batch size is 4, click Generate ONCE, and return all 4 variants!
       // - When smartMesh=true and count in {2,3,4}, also run a single 4-variant batch (same price!) and return `count` variants.
+      await this.#scrollAssetsPanelToTop(page);
       const beforeSnap = await this.#readWorkspaceSnapshot(page);
       const knownIds = new Set(beforeSnap.assets.map(a => a.modelId));
       const newIds = [];
@@ -1038,6 +1059,7 @@ export class TripoController {
         const waitDeadline = Date.now() + 25000;
         while (Date.now() < waitDeadline) {
           await sleep(1200);
+          await this.#scrollAssetsPanelToTop(page);
           const snap = await this.#readWorkspaceSnapshot(page);
           const addedList = snap.assets.filter(a => !knownIds.has(a.modelId));
           if (addedList.length > 0) {
@@ -1102,11 +1124,17 @@ export class TripoController {
   } = {}) {
     const targets = modelIds.map(id => id.toLowerCase());
     const deadline = Date.now() + timeoutMs;
+    const missingPolls = new Map();
 
     while (Date.now() < deadline) {
       const snap = await this.#withLock(async () => {
         const page = await this.getTripoPage({ navigateIfNeeded: false });
-        return this.#readWorkspaceSnapshot(page);
+        let curSnap = await this.#readWorkspaceSnapshot(page);
+        if (targets.some(id => !curSnap.assets.some(a => a.modelId === id))) {
+          await this.#scrollAssetsPanelToTop(page);
+          curSnap = await this.#readWorkspaceSnapshot(page);
+        }
+        return curSnap;
       });
 
       const activeTargets = targets.length > 0
@@ -1117,10 +1145,38 @@ export class TripoController {
         return { status: 'complete', models: [], creditsRemaining: snap.credits };
       }
 
-      const statuses = activeTargets.map(id => {
+      const statuses = [];
+      for (const id of activeTargets) {
         const found = snap.assets.find(a => a.modelId === id);
-        return { modelId: id, found: !!found, status: found ? found.status : 'unknown', info: found || null };
-      });
+        const isCurrentReadyUrl = (snap.url || '').toLowerCase().includes(id) && snap.exportReady;
+        if (found) {
+          missingPolls.set(id, 0);
+          statuses.push({
+            modelId: id,
+            found: true,
+            status: isCurrentReadyUrl ? 'ready' : found.status,
+            info: found,
+          });
+        } else if (isCurrentReadyUrl) {
+          missingPolls.set(id, 0);
+          statuses.push({ modelId: id, found: true, status: 'ready', info: null });
+        } else {
+          const misses = (missingPolls.get(id) || 0) + 1;
+          missingPolls.set(id, misses);
+          if (misses >= 2) {
+            // Right-side Assets panel may be collapsed or virtualized; inspect target URL directly
+            const directSnap = await this.#withLock(async () => {
+              const page = await this.getTripoPage({ navigateIfNeeded: false });
+              return this.#selectAssetOnPage(page, id);
+            }).catch(() => null);
+            if (directSnap?.exportReady) {
+              statuses.push({ modelId: id, found: true, status: 'ready', info: null });
+              continue;
+            }
+          }
+          statuses.push({ modelId: id, found: false, status: 'unknown', info: null });
+        }
+      }
 
       const allReady = statuses.every(s => s.found && s.status === 'ready');
       if (allReady) {
@@ -1161,10 +1217,15 @@ export class TripoController {
     throw new Error(`等待 Tripo 模型生成超时（>${Math.round(timeoutMs / 1000)} 秒）：${targets.join(', ')}`);
   }
 
-  async #selectAssetOnPage(page, modelId) {
+  async #selectAssetOnPage(page, modelId, { forceReload = false } = {}) {
     const targetId = modelId.toLowerCase();
     await this.assertNotBlocked(page);
-    if (!page.url().toLowerCase().includes(targetId)) {
+    if (forceReload) {
+      await page.goto(`${TRIPO_GENERATE_URL}/${targetId}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await sleep(2500);
+      await this.assertNotBlocked(page);
+    } else if (!page.url().toLowerCase().includes(targetId)) {
+      await this.#scrollAssetsPanelToTop(page);
       // Prefer in-app SPA link click (avoids full document reload / unnecessary CDN challenges)
       const clicked = await page.evaluate((id) => {
         const link = [...document.querySelectorAll('a[href*="/workspace/generate/"]')].find(
@@ -1194,8 +1255,8 @@ export class TripoController {
       }
     }
 
-    // Wait up to 30s for target URL to match and Export button to become enabled (3D preview loaded)
-    const deadline = Date.now() + 30000;
+    // Wait up to 75s for target URL to match and Export button to become enabled (2M~5M poly HD 3D preview load)
+    const deadline = Date.now() + 75000;
     while (Date.now() < deadline) {
       await sleep(800);
       if (!page.url().toLowerCase().includes(targetId)) continue;
@@ -1242,7 +1303,7 @@ export class TripoController {
           let lastExportErr = null;
           for (let exportAttempt = 1; exportAttempt <= 3; exportAttempt++) {
             try {
-              const snap = await this.#selectAssetOnPage(page, modelId);
+              const snap = await this.#selectAssetOnPage(page, modelId, { forceReload: exportAttempt >= 2 });
               await ui.refresh(`自动导出 ${String(format || 'FBX').toUpperCase()} 模型 (${i + 1}/${ids.length})`);
               if (!snap.exportReady) {
                 throw new Error(`模型 ${modelId} 的 Export 按钮尚未就绪，请确认模型已生成完毕。`);

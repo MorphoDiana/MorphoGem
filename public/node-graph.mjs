@@ -1127,6 +1127,7 @@ export function validateNodeGraph(p) {
     }
     if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) throw Error('Invalid node coordinates.');
     nodeIds.add(n.id);
+    if (n.data?.runtimeStatus) n.data.runtimeStatus = '';
     if (n.data?.image && !validPath(n.data.image.path)) throw Error('Referenced node image file is missing.');
     if (n.data?.maskImage && !validPath(n.data.maskImage.path)) throw Error('Referenced node mask image file is missing.');
     if (n.data?.views) {

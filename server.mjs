@@ -73,7 +73,7 @@ export async function startMorphoGemServer({
         const blenderPath = await findBlender();
         return sendJson(200, {
           ok: true,
-          version: '2.1.4',
+          version: '2.3.2',
           blenderAvailable: Boolean(blenderPath),
           blenderPath: blenderPath || null,
         });
@@ -181,6 +181,11 @@ export async function startMorphoGemServer({
       }
     }
   });
+
+  server.requestTimeout = 0;
+  server.headersTimeout = 0;
+  server.timeout = 0;
+  server.keepAliveTimeout = 65000;
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
