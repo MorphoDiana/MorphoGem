@@ -930,6 +930,15 @@ app.whenReady().then(async () => {
           renderedNodeCardsAfterAdd: afterCount,
         };
       })()`);
+      // Verify instant dropdown onchange template switching (deluxe_composite = 17 nodes, chibi mod = 9 nodes)
+      await workbenchView.webContents.executeJavaScript(`(() => {
+        const sel = document.getElementById('ngTemplateSelect');
+        sel.value = 'deluxe_composite';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`);
+      await new Promise(r => setTimeout(r, 250));
+      const deluxeNodeCount = await workbenchView.webContents.executeJavaScript(`document.querySelectorAll('#ngNodesLayer .ng-node').length`);
+      wbCheck.deluxeTemplateNodes = deluxeNodeCount;
       const sessRes = await fetch(`${workbenchSrv.url}/api/session`, { headers: { host: new URL(workbenchSrv.url).host } });
       const sessJson = await sessRes.json();
       const smokeResult = {
@@ -944,8 +953,8 @@ app.whenReady().then(async () => {
         cleanUserAgent: !uaCheck.ua.includes('Electron') && uaCheck.ua.includes('Chrome/'),
         webdriverHidden: uaCheck.webdriver === false,
       };
-      if (!wbCheck.hasModsBtn || wbCheck.canvasVisibleHeight < 300 || !wbCheck.headerNoOverlap || wbCheck.renderedNodeCardsAfterAdd <= wbCheck.renderedNodeCardsBefore) {
-        throw new Error('Workbench UI layout or node-creation check failed: ' + JSON.stringify(wbCheck));
+      if (!wbCheck.hasModsBtn || wbCheck.canvasVisibleHeight < 300 || !wbCheck.headerNoOverlap || wbCheck.renderedNodeCardsAfterAdd <= wbCheck.renderedNodeCardsBefore || wbCheck.deluxeTemplateNodes !== 17) {
+        throw new Error('Workbench UI layout, node-creation, or template-switch check failed: ' + JSON.stringify(wbCheck));
       }
       console.log('DESKTOP_SMOKE_OK ' + JSON.stringify(smokeResult));
       setTimeout(() => app.quit(), 250);

@@ -501,7 +501,7 @@ function applyLocaleToDOM() {
     const el = document.querySelector(sel);
     if (el) el.textContent = isEnglish ? en : zh;
   };
-  setTxt('#ngApplyTemplate', '套用', 'Apply');
+  setTxt('#ngApplyTemplate', '↻ 重置', '↻ Reset');
   setTxt('#ngSaveTemplate', '💾 存为模板', '💾 Save Template');
   setTxt('#ngSaveBranch', '🌿 存分支', '🌿 Save Branch');
   setTxt('#ngManagePresets', '⚙ 预设', '⚙ Presets');

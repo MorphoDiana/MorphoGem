@@ -396,6 +396,20 @@ export function initModAndSystemUI(hooks) {
         s.className = 'mod-stat-chip';
         s.textContent = `🗺️ 整图模板 ×${tplCount}`;
         metaRow.append(s);
+        if (m.enabled && hooks.applyTemplate) {
+          for (const tpl of m.templates) {
+            const applyTplBtn = document.createElement('button');
+            applyTplBtn.type = 'button';
+            applyTplBtn.className = 'ng-btn primary';
+            applyTplBtn.style.cssText = 'height:24px;min-height:24px;padding:0 8px;font-size:11px';
+            applyTplBtn.textContent = `⚡ 套用「${tpl.name}」`;
+            applyTplBtn.onclick = async () => {
+              modDlg.close();
+              await hooks.applyTemplate(tpl.id);
+            };
+            metaRow.append(applyTplBtn);
+          }
+        }
       }
       if (nodeCount) {
         const s = document.createElement('span');
@@ -447,7 +461,10 @@ export function initModAndSystemUI(hooks) {
       const delBtn = card.querySelector('.mod-del-btn');
       if (delBtn) {
         delBtn.onclick = async () => {
-          if (!confirm(`确定要从本地 Mods 目录卸载删除「${m.name}」吗？`)) return;
+          const ok = hooks.confirmDialog
+            ? await hooks.confirmDialog('卸载 Mod 确认', `确定要从本地 Mods 目录卸载删除「${m.name}」吗？`)
+            : true;
+          if (!ok) return;
           const res = await fetch('/api/mods/delete', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},

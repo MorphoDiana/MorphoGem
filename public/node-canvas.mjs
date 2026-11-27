@@ -27,6 +27,7 @@ import {
 } from './node-graph.mjs';
 import {inspectImage, validateProject, DEFAULT_PROJECT_NAMES} from './mgem-project.mjs';
 import {initModAndSystemUI} from './mod-manager-ui.mjs';
+import {tr, onLocaleChange} from './i18n.mjs';
 
 const KIND_COLORS = {
   image: '#38bdf8',
@@ -242,6 +243,39 @@ export function initNodeCanvas(hooks) {
   `;
   document.body.append(manageDlg);
 
+  // Non-blocking Styled Confirmation Dialog (avoids Electron BaseWindow window.confirm freeze)
+  const confirmDlg = document.createElement('dialog');
+  confirmDlg.id = 'ngConfirmDialog';
+  confirmDlg.className = 'ng-modal';
+  confirmDlg.innerHTML = `
+    <div class="dialog-top"><h2 id="ngConfirmTitle">确认操作</h2><button type="button" id="ngConfirmCloseX">×</button></div>
+    <p id="ngConfirmMessage" style="color:#cbd5e1;font-size:12.5px;line-height:1.6;margin:12px 0 18px"></p>
+    <div class="dialog-actions" style="justify-content:flex-end;gap:8px">
+      <button type="button" id="ngConfirmCancelBtn" class="ng-btn">取消</button>
+      <button type="button" id="ngConfirmOkBtn" class="ng-btn primary">确定继续</button>
+    </div>
+  `;
+  document.body.append(confirmDlg);
+
+  function askConfirmDialog(title, message) {
+    return new Promise(resolve => {
+      confirmDlg.querySelector('#ngConfirmTitle').textContent = title;
+      confirmDlg.querySelector('#ngConfirmMessage').textContent = message;
+      confirmDlg.querySelector('#ngConfirmCancelBtn').textContent = tr('取消', 'Cancel');
+      confirmDlg.querySelector('#ngConfirmOkBtn').textContent = tr('确认切换', 'Confirm');
+      const finish = ok => {
+        confirmDlg.onclose = null;
+        if (confirmDlg.open) confirmDlg.close();
+        resolve(ok);
+      };
+      confirmDlg.querySelector('#ngConfirmCloseX').onclick = () => finish(false);
+      confirmDlg.querySelector('#ngConfirmCancelBtn').onclick = () => finish(false);
+      confirmDlg.querySelector('#ngConfirmOkBtn').onclick = () => finish(true);
+      confirmDlg.onclose = () => resolve(false);
+      confirmDlg.showModal();
+    });
+  }
+
   const hiddenImgPicker = document.createElement('input');
   hiddenImgPicker.type = 'file';
   hiddenImgPicker.accept = '.png,.jpg,.jpeg,.webp';
@@ -415,15 +449,15 @@ export function initNodeCanvas(hooks) {
   function refreshTemplateSelect() {
     const sel = $('#ngTemplateSelect');
     if (!sel) return;
-    const prevVal = sel.value || currentGraph()?.preset || 'standard_split';
+    const activePreset = currentGraph()?.preset || 'standard_split';
     sel.replaceChildren();
 
     const grpBuiltin = document.createElement('optgroup');
-    grpBuiltin.label = '内置标准模板';
+    grpBuiltin.label = tr('内置标准模板', 'Built-in Templates');
     const builtins = [
-      ['standard_split', '模板：精细角色拆分（裸脸 + 头发 + 服装身体）'],
-      ['deluxe_composite', '模板：豪华多件复合（裸脸 + 发 + 上衣 + 下裙 + 翅膀 + 武器）'],
-      ['single_prop', '模板：自由单件 / 道具'],
+      ['standard_split', tr('模板：精细角色拆分（裸脸 + 头发 + 服装身体）', 'Template: Standard Character Split (Face + Hair + Body)')],
+      ['deluxe_composite', tr('模板：豪华多件复合（裸脸 + 发 + 上衣 + 下裙 + 翅膀 + 武器）', 'Template: Deluxe 6-Part Composite (Face + Hair + Outfit + Wings + Weapon)')],
+      ['single_prop', tr('模板：自由单件 / 道具', 'Template: Standalone Prop / Weapon')],
     ];
     for (const [val, text] of builtins) {
       const opt = document.createElement('option');
@@ -435,7 +469,7 @@ export function initNodeCanvas(hooks) {
 
     if (userPresets.templates.length) {
       const grpCustom = document.createElement('optgroup');
-      grpCustom.label = '🌟 我的自定义模板';
+      grpCustom.label = tr('🌟 我的自定义模板', '🌟 My Saved Templates');
       for (const tpl of userPresets.templates) {
         const opt = document.createElement('option');
         opt.value = `custom:${tpl.id}`;
@@ -448,7 +482,7 @@ export function initNodeCanvas(hooks) {
     const enabledMods = (globalThis.__morphogemLoadedMods || []).filter(m => m.enabled && m.templates?.length);
     if (enabledMods.length) {
       const grpMod = document.createElement('optgroup');
-      grpMod.label = '🧩 已启用 Mod 扩展模板';
+      grpMod.label = tr('🧩 已启用 Mod 扩展模板', '🧩 Enabled Mod Templates');
       for (const mod of enabledMods) {
         for (const tpl of mod.templates) {
           const opt = document.createElement('option');
@@ -460,8 +494,8 @@ export function initNodeCanvas(hooks) {
       sel.append(grpMod);
     }
 
-    const exists = [...sel.querySelectorAll('option')].some(o => o.value === prevVal);
-    sel.value = exists ? prevVal : 'standard_split';
+    const exists = [...sel.querySelectorAll('option')].some(o => o.value === activePreset);
+    sel.value = exists ? activePreset : 'standard_split';
 
     // Sync New Project dialog's template dropdown with Mod templates too!
     const newProjSel = document.querySelector('#newProjectGraphPreset');
@@ -2556,68 +2590,106 @@ export function initNodeCanvas(hooks) {
   }
 
   async function applyTemplateByKey(presetKey) {
+    const sel = $('#ngTemplateSelect');
+    const g = currentGraph();
     if (hasAnyLockedNode()) {
-      hooks.toast('🔒 当前有正在执行或等待拆图的锁定节点，请等待完成或先取消锁定后再整图套用模板');
+      if (sel) sel.value = g.preset || 'standard_split';
+      hooks.toast(tr(
+        '🔒 当前有正在执行或等待拆图的锁定节点，请等待完成或先取消锁定后再切换模板',
+        '🔒 Nodes are currently locked by an active task. Finish or unlock before switching templates.'
+      ));
       return;
     }
-    const g = currentGraph();
-    const hasWork = g.nodes.some(n => (n.data?.candidates?.length > 0) || (n.data?.views && Object.values(n.data.views).some(Boolean)));
-    if (hasWork && !confirm('切换模板将重置当前画布的拆件节点与模型（已上传的主立绘/参考图会自动保留）。是否继续？')) return;
-    const oldSrc = g.nodes.find(n => n.type === 'source_image')?.data?.image || null;
-    const oldStyle = g.nodes.find(n => n.type === 'style_ref')?.data?.image || null;
-    const oldRatio = g.nodes.find(n => n.type === 'ratio_ref')?.data?.image || null;
-    const {project: curP, files: curF} = hooks.get();
-    const p = structuredClone(curP);
-    const f = new Map(curF);
 
-    if (String(presetKey).startsWith('mod:')) {
-      let matchedMod = null;
-      let matchedTpl = null;
-      for (const mod of (globalThis.__morphogemLoadedMods || []).filter(m => m.enabled)) {
-        const found = (mod.templates || []).find(t => t.id === presetKey);
-        if (found) { matchedMod = mod; matchedTpl = found; break; }
+    try {
+      const hasWork = g.nodes.some(
+        n => (n.data?.candidates?.length > 0) || (n.data?.views && Object.values(n.data.views).some(Boolean))
+      );
+      if (hasWork) {
+        const ok = await askConfirmDialog(
+          tr('切换整图模板确认', 'Switch Graph Template'),
+          tr(
+            '切换模板将重置当前画布的拆件节点与已生成模型（已上传的主立绘/参考图会自动保留）。确定要切换吗？',
+            'Switching templates resets part nodes and generated meshes on this canvas (uploaded reference images are automatically preserved). Continue?'
+          )
+        );
+        if (!ok) {
+          if (sel) sel.value = g.preset || 'standard_split';
+          return;
+        }
       }
-      if (!matchedTpl) {
-        hooks.toast('未找到该 Mod 模板（对应 Mod 可能已禁用）');
-        return;
+
+      const oldSrc = g.nodes.find(n => n.type === 'source_image')?.data?.image || null;
+      const oldStyle = g.nodes.find(n => n.type === 'style_ref')?.data?.image || null;
+      const oldRatio = g.nodes.find(n => n.type === 'ratio_ref')?.data?.image || null;
+      const {project: curP, files: curF} = hooks.get();
+      const p = structuredClone(curP);
+      const f = new Map(curF);
+      let appliedLabel = presetKey;
+
+      if (String(presetKey).startsWith('mod:')) {
+        let matchedMod = null;
+        let matchedTpl = null;
+        for (const mod of (globalThis.__morphogemLoadedMods || []).filter(m => m.enabled)) {
+          const found = (mod.templates || []).find(t => t.id === presetKey);
+          if (found) { matchedMod = mod; matchedTpl = found; break; }
+        }
+        if (!matchedTpl) {
+          if (sel) sel.value = g.preset || 'standard_split';
+          hooks.toast(tr('未找到该 Mod 模板（对应 Mod 可能已禁用）', 'Mod template not found or disabled'));
+          return;
+        }
+        p.nodeGraph = instantiateGraphFromTemplate(matchedTpl);
+        p.nodeGraph.preset = presetKey;
+        p.nodeGraph.modMeta = {
+          id: matchedMod.id,
+          name: matchedMod.name,
+          author: matchedMod.author,
+          promptRules: matchedTpl.promptRules || matchedMod.promptRules || '',
+        };
+        appliedLabel = matchedTpl.name;
+      } else if (String(presetKey).startsWith('custom:')) {
+        const tplId = presetKey.slice(7);
+        const found = userPresets.templates.find(t => t.id === tplId);
+        if (!found) {
+          if (sel) sel.value = g.preset || 'standard_split';
+          hooks.toast(tr('未找到该自定义模板', 'Custom template not found'));
+          return;
+        }
+        p.nodeGraph = instantiateGraphFromTemplate(found);
+        p.nodeGraph.preset = presetKey;
+        delete p.nodeGraph.modMeta;
+        appliedLabel = found.name;
+      } else {
+        p.nodeGraph = createTemplateGraph(presetKey);
+        p.nodeGraph.preset = presetKey;
+        delete p.nodeGraph.modMeta;
+        const selOpt = sel?.querySelector(`option[value="${CSS.escape(presetKey)}"]`);
+        appliedLabel = selOpt ? selOpt.textContent : presetKey;
       }
-      p.nodeGraph = instantiateGraphFromTemplate(matchedTpl);
-      p.nodeGraph.preset = presetKey;
-      p.nodeGraph.modMeta = {
-        id: matchedMod.id,
-        name: matchedMod.name,
-        author: matchedMod.author,
-        promptRules: matchedTpl.promptRules || matchedMod.promptRules || '',
-      };
-    } else if (String(presetKey).startsWith('custom:')) {
-      const tplId = presetKey.slice(7);
-      const found = userPresets.templates.find(t => t.id === tplId);
-      if (!found) {
-        hooks.toast('未找到该自定义模板');
-        return;
-      }
-      p.nodeGraph = instantiateGraphFromTemplate(found);
-      p.nodeGraph.preset = presetKey;
-      delete p.nodeGraph.modMeta;
-    } else {
-      p.nodeGraph = createTemplateGraph(presetKey);
-      delete p.nodeGraph.modMeta;
+
+      p.placements = {};
+      if (oldSrc) { const s = p.nodeGraph.nodes.find(n => n.type === 'source_image'); if (s) s.data.image = oldSrc; }
+      if (oldStyle) { const s = p.nodeGraph.nodes.find(n => n.type === 'style_ref'); if (s) s.data.image = oldStyle; }
+      if (oldRatio) { const s = p.nodeGraph.nodes.find(n => n.type === 'ratio_ref'); if (s) s.data.image = oldRatio; }
+      pruneUnusedGraphDocuments(p, f);
+      selectedNodeIds.clear();
+      undoStack.length = 0;
+      redoStack.length = 0;
+      await hooks.commit(p, f);
+      render();
+      fitCanvas(false);
+      hooks.toast(tr(`✓ 已切换模板：${appliedLabel}`, `✓ Switched template: ${appliedLabel}`));
+    } catch (err) {
+      if (sel) sel.value = g.preset || 'standard_split';
+      hooks.toast(err?.message || String(err));
     }
-
-    if (oldSrc) { const s = p.nodeGraph.nodes.find(n => n.type === 'source_image'); if (s) s.data.image = oldSrc; }
-    if (oldStyle) { const s = p.nodeGraph.nodes.find(n => n.type === 'style_ref'); if (s) s.data.image = oldStyle; }
-    if (oldRatio) { const s = p.nodeGraph.nodes.find(n => n.type === 'ratio_ref'); if (s) s.data.image = oldRatio; }
-    pruneUnusedGraphDocuments(p, f);
-    selectedNodeIds.clear();
-    undoStack.length = 0;
-    redoStack.length = 0;
-    await hooks.commit(p, f);
-    render();
-    fitCanvas(false);
   }
 
   // --- Toolbar Bindings ---
+  $('#ngTemplateSelect').onchange = ev => void applyTemplateByKey(ev.target.value);
   $('#ngApplyTemplate').onclick = () => void applyTemplateByKey($('#ngTemplateSelect').value);
+  onLocaleChange(() => refreshTemplateSelect());
   $('#ngSaveTemplate').onclick = () => openSavePresetDialog('template');
   $('#ngSaveBranch').onclick = () => openSavePresetDialog('branch');
   $('#ngManagePresets').onclick = () => {
@@ -2697,6 +2769,8 @@ export function initNodeCanvas(hooks) {
     getSelectedNodeIds: () => [...selectedNodeIds],
     download: (blob, filename) => hooks.download?.(blob, filename),
     toast: msg => hooks.toast(msg),
+    applyTemplate: presetKey => applyTemplateByKey(presetKey),
+    confirmDialog: (title, msg) => askConfirmDialog(title, msg),
     onModsUpdated: () => {
       refreshTemplateSelect();
       render();
