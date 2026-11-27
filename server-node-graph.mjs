@@ -10,6 +10,8 @@ import {
   GRAPH_VIEWS_4,
   ensureNodeGraph,
   getNode,
+  isMeshNodeType,
+  resolveUpstreamViewsNode,
   incomingEdges,
   nodeInputStamp,
   connectedAssemblyMeshes,
@@ -183,7 +185,7 @@ export async function handleNodeGraphRequest(req, res, pathname) {
       return true;
     }
 
-    // 1. Direct local execution of a `tripo_mesh` node using the embedded Tripo Studio browser
+    // 1. Direct local execution of a `tripo_mesh` or `tripo_retexture` node using the embedded Tripo Studio browser
     if (pathname === '/api/node-graph/run-tripo' && req.method === 'POST') {
       const nodeId = req.headers['x-node-id'];
       if (!nodeId) throw Error('缺少目标节点 ID');
@@ -191,8 +193,111 @@ export async function handleNodeGraphRequest(req, res, pathname) {
       const {project: p, files} = await unpackProject(rawKit);
       const g = ensureNodeGraph(p);
       const meshNode = getNode(g, nodeId);
-      if (!meshNode || meshNode.type !== 'tripo_mesh') throw Error('目标 Tripo 节点不存在');
+      if (!meshNode || !isMeshNodeType(meshNode.type)) throw Error('目标 Tripo 节点不存在');
 
+      // Branch A: Standalone `tripo_retexture` (Smart UV Unwrap + Multi-View Retexture on upstream mesh)
+      if (meshNode.type === 'tripo_retexture') {
+        const mEdge = incomingEdges(g, meshNode.id, 'mesh')[0];
+        const upMeshNode = mEdge ? getNode(g, mEdge.fromNode) : null;
+        const upCands = upMeshNode?.data?.candidates || [];
+        const upCand = upCands.find(c => c.id === upMeshNode?.data?.selectedId) || upCands[0] || null;
+        if (!upCand?.path || !files.has(upCand.path)) {
+          throw Error('请先生成或连接上游的 3D 网格白模/原模后再执行重展开 UV 与上色');
+        }
+
+        const needRetex = meshNode.params.retexture !== false;
+        const pvNode = resolveUpstreamViewsNode(g, meshNode.id);
+        if (needRetex && (!pvNode || !GRAPH_VIEWS_4.every(k => pvNode.data?.views?.[k]?.path && files.has(pvNode.data.views[k].path)))) {
+          throw Error('上色需要完整的四方向视图（请接入上游拆图节点，或取消勾选自动上色仅执行 Smart UV 重展开）');
+        }
+        if (!needRetex && meshNode.params.smartUv === false) {
+          throw Error('请至少勾选「重展开 Smart UV」或「四视图上色」中的一项');
+        }
+
+        const daemon = await ensureTripoDaemonState();
+        const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ng-retex-'));
+        try {
+          // Check if upstream candidate's tripoModelId is still live in Tripo workspace to avoid re-upload
+          let reusableModelId = '';
+          if (upCand.tripoModelId) {
+            try {
+              const st = await callTripoDaemon(daemon.port, daemon.token, 'status', {});
+              if (Array.isArray(st?.assets) && st.assets.some(a => a.modelId === upCand.tripoModelId)) {
+                reusableModelId = upCand.tripoModelId;
+              }
+            } catch { /* fallback to file upload */ }
+          }
+
+          let localFbxPath = '';
+          if (!reusableModelId) {
+            localFbxPath = path.join(tmp, path.basename(upCand.path) || 'input.fbx');
+            await fs.writeFile(localFbxPath, files.get(upCand.path));
+          }
+
+          const viewPaths = {};
+          if (needRetex && pvNode) {
+            for (const k of GRAPH_VIEWS_4) {
+              const vDoc = pvNode.data.views[k];
+              const ext = path.extname(vDoc.path) || '.png';
+              const outImg = path.join(tmp, `${k}${ext}`);
+              await fs.writeFile(outImg, files.get(vDoc.path));
+              viewPaths[k] = outImg;
+            }
+          }
+
+          const outModelsDir = path.join(tmp, 'exported');
+          let expItem = null;
+          let finalModelId = '';
+
+          if (needRetex) {
+            const retRes = await callTripoDaemon(daemon.port, daemon.token, 'retexture', {
+              ...(reusableModelId ? {modelId: reusableModelId} : {filePath: localFbxPath, rotateY: 90}),
+              smartUV: meshNode.params.smartUv !== false,
+              frontPng: viewPaths.front,
+              leftPng: viewPaths.left,
+              rightPng: viewPaths.right,
+              backPng: viewPaths.back,
+              textureQuality: meshNode.params.textureSize === 8192 ? '8K' : '4K',
+              pbr: meshNode.params.pbr !== false,
+              removeLighting: Boolean(meshNode.params.removeLighting),
+              outputDir: outModelsDir,
+            });
+            expItem = retRes.export;
+            finalModelId = retRes.modelId || '';
+          } else {
+            const uvRes = await callTripoDaemon(daemon.port, daemon.token, 'smart_uv', {
+              ...(reusableModelId ? {modelId: reusableModelId} : {filePath: localFbxPath, rotateY: 90}),
+              outputDir: outModelsDir,
+            });
+            expItem = uvRes.export;
+            finalModelId = uvRes.modelId || '';
+          }
+
+          if (!expItem?.fbx) throw Error('Tripo 未返回重展 UV / 上色后的有效 FBX 文件');
+          const specs = [{
+            fbx: expItem.fbx,
+            name: `${pvNode?.params?.partName || 'part'}_uv_tex.fbx`,
+            resources: expItem.resources || [],
+            modelId: finalModelId,
+          }];
+
+          await registerMeshCandidatesIntoNode(p, files, meshNode.id, specs, {replace: true});
+          pruneUnusedGraphDocuments(p, files);
+          const packed = await packProject(p, files);
+          const outBytes = Buffer.from(packed.bytes);
+          res.writeHead(200, {
+            'Content-Type': 'application/octet-stream',
+            'Content-Length': outBytes.length,
+            'Cache-Control': 'no-store',
+          });
+          res.end(outBytes);
+          return true;
+        } finally {
+          await fs.rm(tmp, {recursive: true, force: true}).catch(() => {});
+        }
+      }
+
+      // Branch B: `tripo_mesh` generation (with integrated Smart UV + Retexture support when `quality === 'smart'`)
       const vEdge = incomingEdges(g, meshNode.id, 'views')[0];
       const pvNode = vEdge ? getNode(g, vEdge.fromNode) : null;
       if (!pvNode || !GRAPH_VIEWS_4.every(k => pvNode.data?.views?.[k]?.path && files.has(pvNode.data.views[k].path))) {
@@ -212,6 +317,8 @@ export async function handleNodeGraphRequest(req, res, pathname) {
         }
 
         const isSmart = meshNode.params.quality === 'smart';
+        const wantSmartUv = isSmart && (meshNode.params.smartUv !== false);
+        const wantAutoRetex = isSmart && (meshNode.params.autoRetexture !== false);
         const count = [1, 2, 3, 4].includes(meshNode.params.candidateCount) ? meshNode.params.candidateCount : 1;
         const subdirs = Array.from({length: count}, (_, i) => `cand-${i + 1}`);
         const outModelsDir = path.join(tmp, 'exported');
@@ -223,11 +330,13 @@ export async function handleNodeGraphRequest(req, res, pathname) {
           right: viewPaths.right,
           back: viewPaths.back,
           smartMesh: isSmart,
+          smartUV: wantSmartUv,
+          retextureAfterGenerate: wantAutoRetex,
           aiModel: isSmart ? 'P2.0' : (meshNode.params.aiModel === 'H3.1' ? 'H3.1' : 'H3.5'),
           topology: isSmart ? (meshNode.params.smartTopology === 'triangle' ? 'Triangle' : 'Quad') : undefined,
           polycount: meshNode.params.polyFaces,
           ultraMesh: !isSmart,
-          texture: true,
+          texture: !isSmart || wantAutoRetex,
           textureQuality: meshNode.params.textureSize === 8192 ? '8K' : '4K',
           pbr: meshNode.params.pbr !== false,
           removeLighting: Boolean(meshNode.params.removeLighting),
@@ -242,6 +351,7 @@ export async function handleNodeGraphRequest(req, res, pathname) {
           fbx: item.fbx,
           name: `${pvNode.params?.partName || 'part'}_c${idx + 1}.fbx`,
           resources: item.resources || [],
+          modelId: item.modelId || '',
         }));
         if (!specs.length) throw Error('Tripo 未返回有效 FBX 导出结果');
 

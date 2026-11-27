@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TripoController } from './src/tripo-controller.mjs';
-import { runSegmentation, runRetexture, runRigging } from './src/tripo-postprocess.mjs';
+import { runSegmentation, runSmartUvOnly, runRetexture, runRigging } from './src/tripo-postprocess.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DAEMON_STATE_FILE = process.env.TRIPO_DAEMON_STATE_FILE
@@ -25,6 +25,47 @@ export function createTripoDispatcher(controller, { onStop } = {}) {
       case 'generate_and_export': {
         const gen = await controller.generate({ ...params, mode: params.mode || 'multiview', wait: true });
         const modelIds = gen.models.map(m => m.modelId);
+
+        // Smart Mesh post-pipeline: optional Smart UV Unwrap + Multi-View Retexture before FBX export
+        if (params.smartMesh && (params.smartUV || params.retextureAfterGenerate)) {
+          const exports = [];
+          const updatedModels = [];
+          for (let i = 0; i < modelIds.length; i++) {
+            const sub = Array.isArray(params.subdirs) && params.subdirs[i]
+              ? path.join(path.resolve(params.outputDir), params.subdirs[i])
+              : path.resolve(params.outputDir);
+            if (params.retextureAfterGenerate) {
+              const ret = await runRetexture(controller, {
+                modelId: modelIds[i],
+                smartUV: Boolean(params.smartUV),
+                frontPng: params.front,
+                leftPng: params.left,
+                rightPng: params.right,
+                backPng: params.back,
+                textureQuality: params.textureQuality || '4K',
+                pbr: params.pbr !== false,
+                removeLighting: Boolean(params.removeLighting),
+                outputDir: sub,
+              });
+              updatedModels.push({ ...gen.models[i], modelId: ret.modelId });
+              exports.push({ ...ret.export, modelId: ret.modelId });
+            } else {
+              const uvRes = await runSmartUvOnly(controller, {
+                modelId: modelIds[i],
+                outputDir: sub,
+              });
+              updatedModels.push({ ...gen.models[i], modelId: uvRes.modelId });
+              exports.push({ ...uvRes.export, modelId: uvRes.modelId });
+            }
+          }
+          return {
+            status: 'generated_and_exported',
+            creditsRemaining: gen.creditsRemaining,
+            models: updatedModels,
+            exports,
+          };
+        }
+
         const exp = await controller.exportModels({
           modelIds,
           format: params.format || 'FBX',
@@ -33,10 +74,15 @@ export function createTripoDispatcher(controller, { onStop } = {}) {
           outputDir: params.outputDir,
           subdirs: params.subdirs,
         });
-        return { status: 'generated_and_exported', creditsRemaining: gen.creditsRemaining, models: gen.models, exports: exp.items };
+        const exportsWithIds = (exp.items || []).map((item, idx) => ({
+          ...item,
+          modelId: item.modelId || modelIds[idx] || '',
+        }));
+        return { status: 'generated_and_exported', creditsRemaining: gen.creditsRemaining, models: gen.models, exports: exportsWithIds };
       }
       case 'upload_model': return controller.uploadModel(params);
       case 'segment': return runSegmentation(controller, params);
+      case 'smart_uv': return runSmartUvOnly(controller, params);
       case 'retexture': return runRetexture(controller, params);
       case 'rig': return runRigging(controller, params);
       case 'stop':

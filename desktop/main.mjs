@@ -939,6 +939,19 @@ app.whenReady().then(async () => {
       await new Promise(r => setTimeout(r, 250));
       const deluxeNodeCount = await workbenchView.webContents.executeJavaScript(`document.querySelectorAll('#ngNodesLayer .ng-node').length`);
       wbCheck.deluxeTemplateNodes = deluxeNodeCount;
+      // Verify Smart Mesh UV/Retexture controls render when switching a tripo_mesh node to 'smart'
+      const smartCheck = await workbenchView.webContents.executeJavaScript(`(() => {
+        const meshCard = document.querySelector('#ngNodesLayer .ng-node[data-type="tripo_mesh"]');
+        const modeSel = meshCard?.querySelector('select');
+        if (modeSel) {
+          modeSel.value = 'smart';
+          modeSel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        const updatedCard = document.querySelector('#ngNodesLayer .ng-node[data-type="tripo_mesh"]');
+        const txt = updatedCard?.innerText || '';
+        return txt.includes('Smart UV') && txt.includes('Retexture');
+      })()`);
+      wbCheck.smartUvRetexRendered = smartCheck;
       const sessRes = await fetch(`${workbenchSrv.url}/api/session`, { headers: { host: new URL(workbenchSrv.url).host } });
       const sessJson = await sessRes.json();
       const smokeResult = {
@@ -953,8 +966,8 @@ app.whenReady().then(async () => {
         cleanUserAgent: !uaCheck.ua.includes('Electron') && uaCheck.ua.includes('Chrome/'),
         webdriverHidden: uaCheck.webdriver === false,
       };
-      if (!wbCheck.hasModsBtn || wbCheck.canvasVisibleHeight < 300 || !wbCheck.headerNoOverlap || wbCheck.renderedNodeCardsAfterAdd <= wbCheck.renderedNodeCardsBefore || wbCheck.deluxeTemplateNodes !== 17) {
-        throw new Error('Workbench UI layout, node-creation, or template-switch check failed: ' + JSON.stringify(wbCheck));
+      if (!wbCheck.hasModsBtn || wbCheck.canvasVisibleHeight < 300 || !wbCheck.headerNoOverlap || wbCheck.renderedNodeCardsAfterAdd <= wbCheck.renderedNodeCardsBefore || wbCheck.deluxeTemplateNodes !== 17 || !wbCheck.smartUvRetexRendered) {
+        throw new Error('Workbench UI layout, node-creation, template-switch, or Smart UV check failed: ' + JSON.stringify(wbCheck));
       }
       console.log('DESKTOP_SMOKE_OK ' + JSON.stringify(smokeResult));
       setTimeout(() => app.quit(), 250);

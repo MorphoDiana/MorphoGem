@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { verifyFbxHeader } from './src/downloads.mjs';
 import { createNewProject, packProject, unpackProject, checkFBX } from '../public/mgem-project.mjs';
-import { registerGraphDocument } from '../public/node-graph.mjs';
+import { registerGraphDocument, createNode, connectPorts, nodeStatus } from '../public/node-graph.mjs';
 import { buildNodeGraphViewsPrompt, computeLockedNodesForViews } from '../public/node-graph-prompts.mjs';
 import { SUPPORTED_LOCALES } from '../public/i18n.mjs';
 
@@ -72,6 +72,15 @@ async function testMgemArchiveAndBilingualPrompts() {
   const srcNode = proj.nodeGraph.nodes.find(n => n.type === 'source_image');
   const doc = await registerGraphDocument(proj, files, 'concept.png', new Uint8Array(png1x1), 'src');
   srcNode.data.image = { ...doc, mime: 'image/png', width: 1, height: 1 };
+
+  // Verify Smart Mesh UV+Retexture params & standalone `tripo_retexture` node roundtrip
+  const smartMeshNode = createNode('tripo_mesh', 500, 120, { quality: 'smart', polyFaces: 18000, smartUv: true, autoRetexture: true });
+  assert.equal(smartMeshNode.params.smartUv, true);
+  assert.equal(smartMeshNode.params.autoRetexture, true);
+  const retexNode = createNode('tripo_retexture', 860, 120, { smartUv: true, retexture: true, textureSize: 8192 });
+  proj.nodeGraph.nodes.push(smartMeshNode, retexNode);
+  connectPorts(proj.nodeGraph, smartMeshNode.id, 'mesh', retexNode.id, 'mesh');
+  assert.equal(nodeStatus(proj.nodeGraph, retexNode.id).state, 'waiting');
 
   const packed = await packProject(proj, files);
   const unpacked = await unpackProject(packed.bytes);

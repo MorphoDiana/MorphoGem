@@ -5,6 +5,8 @@ import {
   BUILTIN_BRANCH_PRESETS,
   ensureNodeGraph,
   createNode,
+  isMeshNodeType,
+  resolveUpstreamViewsNode,
   createTemplateGraph,
   serializeGraphAsTemplate,
   instantiateGraphFromTemplate,
@@ -995,7 +997,8 @@ export function initNodeCanvas(hooks) {
     // 3. Individual Atomic Nodes
     const nodeEntries = [
       ['part_views', '✂️ 部件正交四视图拆图', '自由命名要拆出的部件（脸/发/衣/翼/武器），生成正左右背四视图', 'part views split 拆图 部件 四视图'],
-      ['tripo_mesh', '🧊 Tripo 3D 建模节点', '接收四方向视图，独立配置 HD 百万面或 Smart 四边面拓扑生成模型', 'tripo mesh 3d model 建模 网格 高模 低模'],
+      ['tripo_mesh', '🧊 Tripo 3D 建模节点', '接收四方向视图，配置 HD 百万面或 Smart 智能拓扑（含自动重展UV上色）', 'tripo mesh 3d model 建模 网格 高模 低模 smart'],
+      ['tripo_retexture', '🎨 UV 重展开与贴图上色', '对上游 3D 白模/原模执行独立 Smart UV 重展开与多视图 4K/8K 上色（支持多皮肤换色）', 'uv unwrap smart uv retexture texture 重展开 上色 贴图 换色'],
       ['style_ref', '🎨 画风参考立绘', '提供赛璐璐/厚涂/二次元渲染画风与线条参考', 'style ref 画风 上色 参考'],
       ['ratio_ref', '📏 头身比参考图', '提供全身头身比例与肢体修长度参考', 'ratio proportion 头身比 比例 参考'],
       ['balance_views', '📐 全身合体比例三视图', '生成正/侧/背全身比例标尺，辅助 3D 视口合体对位', 'balance guide three views 三视图 比例尺'],
@@ -1025,12 +1028,23 @@ export function initNodeCanvas(hooks) {
             if (type === 'part_views' || type === 'balance_views') {
               const src = g.nodes.find(x => x.type === 'source_image');
               if (src) try { connectPorts(g, src.id, 'image', n.id, 'source'); } catch {}
-            } else if (type === 'tripo_mesh') {
+            } else if (isMeshNodeType(type)) {
               const asm = g.nodes.find(x => x.type === 'assembly_export');
               if (asm) try { connectPorts(g, n.id, 'mesh', asm.id, 'meshes'); } catch {}
             }
           } else {
             applyPendingWireToCreated([n], wireFrom);
+            // If inserting `tripo_retexture` downstream of a `tripo_mesh`, splice it cleanly into `assembly_export`
+            if (type === 'tripo_retexture' && wireFrom.dir === 'out' && wireFrom.kind === 'mesh') {
+              const asmEdge = g.edges.find(
+                e => e.fromNode === wireFrom.nodeId && e.fromPort === 'mesh' && getNode(g, e.toNode)?.type === 'assembly_export'
+              );
+              if (asmEdge) {
+                const asmId = asmEdge.toNode;
+                disconnectEdge(g, asmEdge.id);
+                try { connectPorts(g, n.id, 'mesh', asmId, 'meshes'); } catch {}
+              }
+            }
           }
           setSingleSelection(n.id);
           hooks.changed();
@@ -1655,6 +1669,8 @@ export function initNodeCanvas(hooks) {
         node.params.quality = qSel.value;
         if (qSel.value === 'smart') {
           node.params.aiModel = 'P2.0';
+          node.params.smartUv ??= true;
+          node.params.autoRetexture ??= true;
           node.params.polyFaces = Math.min(node.params.polyFaces || 20000, node.params.smartTopology === 'triangle' ? 50000 : 25000);
         } else {
           node.params.aiModel = 'H3.5';
@@ -1700,6 +1716,41 @@ export function initNodeCanvas(hooks) {
       }
       polyField.append(polyInp, pills);
 
+      let smartPostBox = null;
+      const isSmartMode = node.params.quality === 'smart';
+      const texEnabled = !isSmartMode || node.params.autoRetexture !== false;
+
+      if (isSmartMode) {
+        smartPostBox = document.createElement('div');
+        smartPostBox.style.cssText = 'display:flex;flex-direction:column;gap:5px;padding:7px 9px;border-radius:8px;background:rgba(6,182,212,0.10);border:1px solid rgba(56,189,248,0.32)';
+
+        const uvLbl = document.createElement('label');
+        uvLbl.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#bae6fd;font-weight:600;cursor:pointer';
+        const uvChk = document.createElement('input');
+        uvChk.type = 'checkbox';
+        uvChk.checked = node.params.smartUv !== false;
+        uvChk.onchange = () => {
+          node.params.smartUv = uvChk.checked;
+          hooks.changed();
+          updateStatusesOnly();
+        };
+        uvLbl.append(uvChk, document.createTextNode(tr('重展开 Smart UV（规整低模 UV 岛）', 'Unwrap Smart UV (clean low-poly UVs)')));
+
+        const retexLbl = document.createElement('label');
+        retexLbl.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#e0f2fe;font-weight:600;cursor:pointer';
+        const retexChk = document.createElement('input');
+        retexChk.type = 'checkbox';
+        retexChk.checked = node.params.autoRetexture !== false;
+        retexChk.onchange = () => {
+          node.params.autoRetexture = retexChk.checked;
+          hooks.changed();
+          render();
+        };
+        retexLbl.append(retexChk, document.createTextNode(tr('四视图自动上色（Retexture 烘焙贴图）', 'Auto 4-View Retexture (bake textures)')));
+
+        smartPostBox.append(uvLbl, retexLbl);
+      }
+
       const tRow = document.createElement('div');
       tRow.className = 'ng-row2';
       const texField = document.createElement('label');
@@ -1707,6 +1758,7 @@ export function initNodeCanvas(hooks) {
       texField.innerHTML = '<span>贴图精度</span><select><option value="4096">4K 标准</option><option value="8192">8K 超清</option></select>';
       const texSel = texField.querySelector('select');
       texSel.value = String(node.params.textureSize || 4096);
+      texSel.disabled = !texEnabled;
       texSel.onchange = () => { node.params.textureSize = Number(texSel.value); hooks.changed(); updateStatusesOnly(); };
 
       const cntField = document.createElement('label');
@@ -1718,14 +1770,17 @@ export function initNodeCanvas(hooks) {
       tRow.append(texField, cntField);
 
       const lightLabel = document.createElement('label');
-      lightLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#cbd5e1;cursor:pointer';
+      lightLabel.style.cssText = `display:flex;align-items:center;gap:6px;font-size:11.5px;color:#cbd5e1;cursor:pointer;opacity:${texEnabled ? '1' : '0.45'}`;
       const lightChk = document.createElement('input');
       lightChk.type = 'checkbox';
       lightChk.checked = Boolean(node.params.removeLighting);
+      lightChk.disabled = !texEnabled;
       lightChk.onchange = () => { node.params.removeLighting = lightChk.checked; hooks.changed(); updateStatusesOnly(); };
       lightLabel.append(lightChk, document.createTextNode('去除烘焙高光与阴影（适合二次元/MToon）'));
 
-      body.append(qRow, polyField, tRow, lightLabel);
+      body.append(qRow, polyField);
+      if (smartPostBox) body.append(smartPostBox);
+      body.append(tRow, lightLabel);
 
       if (Array.isArray(node.data?.candidates) && node.data.candidates.length > 1) {
         const candRow = document.createElement('div');
@@ -1761,6 +1816,87 @@ export function initNodeCanvas(hooks) {
         : node.data?.candidates?.length
           ? '▶ 重新在 Tripo 生成此部件'
           : '▶ 直接在 Tripo 生成此 3D 部件';
+      runBtn.onclick = () => void runTripoNodes([node.id]);
+      body.append(runBtn);
+      return body;
+    }
+
+    if (node.type === 'tripo_retexture') {
+      const optsBox = document.createElement('div');
+      optsBox.style.cssText = 'display:flex;flex-direction:column;gap:6px;padding:8px 9px;border-radius:8px;background:rgba(139,92,246,0.10);border:1px solid rgba(167,139,250,0.32)';
+
+      const uvLbl = document.createElement('label');
+      uvLbl.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#ddd6fe;font-weight:600;cursor:pointer';
+      const uvChk = document.createElement('input');
+      uvChk.type = 'checkbox';
+      uvChk.checked = node.params.smartUv !== false;
+      uvChk.onchange = () => { node.params.smartUv = uvChk.checked; hooks.changed(); updateStatusesOnly(); };
+      uvLbl.append(uvChk, document.createTextNode(tr('先执行 Smart UV 重展开（≤8万面推荐）', 'Run Smart UV Unwrap first (≤80k faces)')));
+
+      const rtLbl = document.createElement('label');
+      rtLbl.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#ede9fe;font-weight:600;cursor:pointer';
+      const rtChk = document.createElement('input');
+      rtChk.type = 'checkbox';
+      rtChk.checked = node.params.retexture !== false;
+      rtChk.onchange = () => { node.params.retexture = rtChk.checked; hooks.changed(); render(); };
+      rtLbl.append(rtChk, document.createTextNode(tr('执行多视图贴图上色（Retexture）', 'Run Multi-View Retexture')));
+
+      optsBox.append(uvLbl, rtLbl);
+      body.append(optsBox);
+
+      const needRetex = node.params.retexture !== false;
+      if (needRetex) {
+        const texField = document.createElement('label');
+        texField.className = 'ng-field';
+        texField.innerHTML = '<span>上色贴图分辨率</span><select><option value="4096">4K 标准</option><option value="8192">8K 超清</option></select>';
+        const texSel = texField.querySelector('select');
+        texSel.value = String(node.params.textureSize || 4096);
+        texSel.onchange = () => { node.params.textureSize = Number(texSel.value); hooks.changed(); updateStatusesOnly(); };
+
+        const pbrLbl = document.createElement('label');
+        pbrLbl.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#cbd5e1;cursor:pointer';
+        const pbrChk = document.createElement('input');
+        pbrChk.type = 'checkbox';
+        pbrChk.checked = node.params.pbr !== false;
+        pbrChk.onchange = () => { node.params.pbr = pbrChk.checked; hooks.changed(); updateStatusesOnly(); };
+        pbrLbl.append(pbrChk, document.createTextNode(tr('生成 PBR 粗糙度/金属度贴图', 'Generate PBR Metallic/Roughness maps')));
+
+        const lightLbl = document.createElement('label');
+        lightLbl.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#cbd5e1;cursor:pointer';
+        const lightChk = document.createElement('input');
+        lightChk.type = 'checkbox';
+        lightChk.checked = Boolean(node.params.removeLighting);
+        lightChk.onchange = () => { node.params.removeLighting = lightChk.checked; hooks.changed(); updateStatusesOnly(); };
+        lightLbl.append(lightChk, document.createTextNode(tr('去除烘焙高光与阴影（二次元推荐）', 'Remove Baked Lighting (Anime/Toon)')));
+
+        const pv = resolveUpstreamViewsNode(g, node.id);
+        const hint = document.createElement('div');
+        hint.style.cssText = 'font-size:11px;color:#94a3b8;line-height:1.4';
+        hint.textContent = pv
+          ? tr(`参考视图源：${pv.params?.partName || pv.id}`, `Views source: ${pv.params?.partName || pv.id}`)
+          : tr('提示：未单独连入四视图时自动继承上游建模节点的四视图', 'Auto-inherits upstream 4-views unless wired');
+
+        body.append(texField, pbrLbl, lightLbl, hint);
+      }
+
+      const mEdge = incomingEdges(g, node.id, 'mesh')[0];
+      const upMesh = mEdge ? getNode(g, mEdge.fromNode) : null;
+      const upReady = Array.isArray(upMesh?.data?.candidates) && upMesh.data.candidates.length > 0;
+      const pv = resolveUpstreamViewsNode(g, node.id);
+      const viewsReady = pv && GRAPH_VIEWS_4.every(k => pv.data?.views?.[k]?.sha256);
+      const canRun = upReady && (!needRetex || viewsReady) && (needRetex || node.params.smartUv !== false);
+      const busy = tripoExecutingIds.has(node.id) || isNodeLocked(node.id);
+
+      const runBtn = document.createElement('button');
+      runBtn.type = 'button';
+      runBtn.className = 'ng-btn violet';
+      runBtn.style.justifyContent = 'center';
+      runBtn.disabled = busy || !canRun;
+      runBtn.textContent = tripoExecutingIds.has(node.id)
+        ? tr('⏳ 正在重展 UV / 上色…', '⏳ Unwrapping UV / Retexturing...')
+        : node.data?.candidates?.length
+          ? tr('▶ 重新执行 UV 与上色', '▶ Re-run Smart UV & Retexture')
+          : tr('▶ 执行 UV 重展开与上色', '▶ Run Smart UV & Retexture');
       runBtn.onclick = () => void runTripoNodes([node.id]);
       body.append(runBtn);
       return body;
@@ -2711,16 +2847,31 @@ export function initNodeCanvas(hooks) {
   window.addEventListener('morphogem-switch-workspace', ev => {
     if (ev.detail) setWorkspaceMode(ev.detail);
   });
-  $('#ngRunAllTripo').onclick = () => {
+  $('#ngRunAllTripo').onclick = async () => {
     const g = currentGraph();
-    const readyIds = g.nodes
+    const stage1Ids = g.nodes
       .filter(n => n.type === 'tripo_mesh' && nodeStatus(g, n.id).state === 'dirty')
       .map(n => n.id);
-    if (!readyIds.length) {
-      hooks.toast('当前没有待生成的 Tripo 3D 节点（请先完成上游四视图拆图，或修改建模参数后再运行）');
+    const stage2AlreadyDirty = g.nodes
+      .filter(n => n.type === 'tripo_retexture' && nodeStatus(g, n.id).state === 'dirty')
+      .map(n => n.id);
+    if (!stage1Ids.length && !stage2AlreadyDirty.length) {
+      hooks.toast(tr(
+        '当前没有待执行的 Tripo 建模或 UV 上色节点（请先完成上游四视图拆图，或修改参数后再运行）',
+        'No pending Tripo 3D or UV/Retexture nodes to run.'
+      ));
       return;
     }
-    void runTripoNodes(readyIds);
+    if (stage1Ids.length) {
+      await runTripoNodes(stage1Ids);
+    }
+    const gAfter = currentGraph();
+    const stage2Ids = gAfter.nodes
+      .filter(n => n.type === 'tripo_retexture' && nodeStatus(gAfter, n.id).state === 'dirty')
+      .map(n => n.id);
+    if (stage2Ids.length) {
+      await runTripoNodes(stage2Ids);
+    }
   };
   const open3DBtn = $('#ngOpen3D');
   if (open3DBtn) open3DBtn.onclick = () => setWorkspaceMode('viewport');

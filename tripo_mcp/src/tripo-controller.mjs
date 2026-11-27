@@ -654,12 +654,12 @@ export class TripoController {
 
       await this.#closeAnyOpenModalDialogs(page);
 
-      // 1. Select HD Model vs Smart Mesh
+      // 1. Select HD Model vs Smart Mesh (English & Chinese UI compatible)
       await page.evaluate((wantSmart) => {
         const target = wantSmart ? 'Smart Mesh' : 'HD Model';
         const btn = [...document.querySelectorAll('button')].find(b => {
           const t = (b.innerText || '').replace(/\s+/g, ' ').trim();
-          return wantSmart ? t.startsWith('Smart Mesh') : t === 'HD Model';
+          return wantSmart ? /^(Smart Mesh|智能网格)/i.test(t) : /^(HD Model|高精模型|高精度模型)$/i.test(t);
         });
         if (!btn) throw new Error(`Could not find top mode button "${target}"`);
         btn.click();
@@ -739,7 +739,7 @@ export class TripoController {
       if (aiModel) {
         const aiComboRect = await page.evaluate((targetModel) => {
           const aiLabel = [...document.querySelectorAll('*')].find(
-            el => el.children.length === 0 && (el.textContent || '').trim() === 'AI Model' && el.getBoundingClientRect().x < 340
+            el => el.children.length === 0 && /^(AI Model|AI\s*模型)$/i.test((el.textContent || '').trim()) && el.getBoundingClientRect().x < 340
           );
           if (!aiLabel) return null;
           let box = aiLabel.parentElement;
@@ -837,7 +837,7 @@ export class TripoController {
           const smartPolyAction = await page.evaluate(async (cfg) => {
             const s = ms => new Promise(r => setTimeout(r, ms));
             const dlg = [...document.querySelectorAll('[data-radix-popper-content-wrapper], [role="dialog"]')].find(
-              d => d.offsetParent !== null && /Topology|Polycount|Polygon Count/i.test(d.innerText || '')
+              d => d.offsetParent !== null && /Topology|Polycount|Polygon Count|拓扑|面数/i.test(d.innerText || '')
             );
             if (!dlg) return null;
 

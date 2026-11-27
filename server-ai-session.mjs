@@ -129,7 +129,7 @@ export function createSessionManager(options = {}) {
           const {project} = await unpackProject(buf);
           const nodes = project.nodeGraph?.nodes || [];
           const meshCount = nodes.filter(
-            n => n.type === 'tripo_mesh' && Array.isArray(n.data?.candidates) && n.data.candidates.length > 0
+            n => (n.type === 'tripo_mesh' || n.type === 'tripo_retexture') && Array.isArray(n.data?.candidates) && n.data.candidates.length > 0
           ).length;
           items.push({
             id: project.id,

@@ -18,6 +18,8 @@ import {
   GRAPH_VIEWS_3,
   ensureNodeGraph,
   getNode,
+  isMeshNodeType,
+  resolveUpstreamViewsNode,
   incomingEdges,
   nodeInputStamp,
   defaultPlacementForPartName,
@@ -102,10 +104,9 @@ with open(out_path, 'w', encoding='utf-8') as fh:
 export async function registerMeshCandidatesIntoNode(p, files, nodeId, specs, {replace = true} = {}) {
   const g = ensureNodeGraph(p);
   const node = getNode(g, nodeId);
-  if (!node || node.type !== 'tripo_mesh') throw Error(`Tripo mesh node not found: ${nodeId}`);
+  if (!node || !isMeshNodeType(node.type)) throw Error(`Tripo mesh/retexture node not found: ${nodeId}`);
 
-  const pvEdge = incomingEdges(g, node.id, 'views')[0];
-  const pvNode = pvEdge ? getNode(g, pvEdge.fromNode) : null;
+  const pvNode = resolveUpstreamViewsNode(g, node.id);
   const partName = pvNode?.params?.partName || node.params?.title || 'Part';
   const targetH = defaultHeightForPartName(partName);
 
@@ -136,6 +137,7 @@ export async function registerMeshCandidatesIntoNode(p, files, nodeId, specs, {r
       sha256: doc.sha256,
       resources: resDocs,
       normalization: norm,
+      ...(spec.modelId ? {tripoModelId: spec.modelId} : {}),
     };
     node.data.candidates.push(cand);
   }

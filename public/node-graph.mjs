@@ -61,6 +61,17 @@ export const NODE_SPECS = Object.freeze({
     inputs: [{id: 'views', label: '四方向视图', kind: 'views'}],
     outputs: [{id: 'mesh', label: '部件 3D 网格', kind: 'mesh'}],
   },
+  tripo_retexture: {
+    type: 'tripo_retexture',
+    category: 'mesh',
+    badge: 'UV·上色',
+    defaultTitle: 'UV 重展开与贴图上色',
+    inputs: [
+      {id: 'mesh', label: '输入 3D 网格', kind: 'mesh'},
+      {id: 'views', label: '上色四视图（可选）', kind: 'views'},
+    ],
+    outputs: [{id: 'mesh', label: '已上色 3D 网格', kind: 'mesh'}],
+  },
   assembly_export: {
     type: 'assembly_export',
     category: 'output',
@@ -142,11 +153,28 @@ export function createNode(type, x = 80, y = 80, overrides = {}) {
       quality, // 'high' | 'smart'
       aiModel: overrides.aiModel || (quality === 'smart' ? 'P2.0' : 'H3.5'),
       smartTopology: overrides.smartTopology === 'triangle' ? 'triangle' : 'quad',
+      smartUv: overrides.smartUv !== undefined ? Boolean(overrides.smartUv) : true,
+      autoRetexture: overrides.autoRetexture !== undefined ? Boolean(overrides.autoRetexture) : true,
       polyFaces: Number.isInteger(overrides.polyFaces) ? overrides.polyFaces : (quality === 'smart' ? 20000 : 2000000),
       textureSize: overrides.textureSize === 8192 ? 8192 : 4096,
       pbr: overrides.pbr !== false,
       removeLighting: Boolean(overrides.removeLighting),
       candidateCount: [1, 2, 3, 4].includes(overrides.candidateCount) ? overrides.candidateCount : 1,
+    };
+    base.data = {
+      candidates: [],
+      selectedId: '',
+      completedStamp: '',
+      runtimeStatus: '',
+    };
+  } else if (type === 'tripo_retexture') {
+    base.params = {
+      title: overrides.title || spec.defaultTitle,
+      smartUv: overrides.smartUv !== undefined ? Boolean(overrides.smartUv) : true,
+      retexture: overrides.retexture !== undefined ? Boolean(overrides.retexture) : true,
+      textureSize: overrides.textureSize === 8192 ? 8192 : 4096,
+      pbr: overrides.pbr !== false,
+      removeLighting: overrides.removeLighting !== undefined ? Boolean(overrides.removeLighting) : true,
     };
     base.data = {
       candidates: [],
@@ -262,6 +290,28 @@ export function ensureNodeGraph(p) {
     p.nodeGraph = createTemplateGraph(mode);
   }
   return p.nodeGraph;
+}
+
+export function isMeshNodeType(type) {
+  return type === 'tripo_mesh' || type === 'tripo_retexture';
+}
+
+export function resolveUpstreamViewsNode(graph, nodeId, visited = new Set()) {
+  if (!nodeId || visited.has(nodeId)) return null;
+  visited.add(nodeId);
+  const node = getNode(graph, nodeId);
+  if (!node) return null;
+  if (node.type === 'part_views') return node;
+  const vEdge = incomingEdges(graph, nodeId, 'views')[0];
+  if (vEdge) {
+    const vn = getNode(graph, vEdge.fromNode);
+    if (vn?.type === 'part_views') return vn;
+  }
+  const mEdge = incomingEdges(graph, nodeId, 'mesh')[0];
+  if (mEdge) {
+    return resolveUpstreamViewsNode(graph, mEdge.fromNode, visited);
+  }
+  return null;
 }
 
 export function getNode(graph, id) {
@@ -405,14 +455,31 @@ export const BUILTIN_BRANCH_PRESETS = Object.freeze([
   {
     id: 'builtin_smart_weapon',
     builtin: true,
-    name: '硬表面武器/道具（Smart 四边面 1.5万面）',
-    description: '独立对称正交道具视图 + P2.0 智能四边面低模拓扑',
+    name: '硬表面武器/道具（Smart 四边面 1.5万面 + 重展UV上色）',
+    description: '独立对称正交道具视图 + P2.0 智能四边面低模拓扑 + 自动重展开 Smart UV 与 4K 上色',
     nodes: [
       {relId: 'n0', type: 'part_views', dx: 0, dy: 0, params: {partName: '主武器', promptHint: '独立垂直正交摆放，去除人物手部遮挡，上下像素高度严格对齐', pose: 'natural', resolution: 1024}},
-      {relId: 'n1', type: 'tripo_mesh', dx: 380, dy: 0, params: {title: 'Tripo · 主武器', quality: 'smart', aiModel: 'P2.0', smartTopology: 'quad', polyFaces: 15000, textureSize: 4096, pbr: true, removeLighting: false, candidateCount: 1}},
+      {relId: 'n1', type: 'tripo_mesh', dx: 380, dy: 0, params: {title: 'Tripo · 主武器', quality: 'smart', aiModel: 'P2.0', smartTopology: 'quad', smartUv: true, autoRetexture: true, polyFaces: 15000, textureSize: 4096, pbr: true, removeLighting: false, candidateCount: 1}},
     ],
     edges: [{from: 'n0', fromPort: 'views', to: 'n1', toPort: 'views'}],
     autoWire: {connectSource: true, connectStyle: true, connectRatio: false, connectAssembly: true},
+  },
+  {
+    id: 'builtin_smart_uv_retex_pipeline',
+    builtin: true,
+    name: '智能低模 → 独立重展开 UV 与上色（显式三阶分支）',
+    description: '先生成 P2.0 纯四边面白模，再经独立「UV 重展开与上色」节点烘焙 4K 贴图（支持多皮肤换色）',
+    nodes: [
+      {relId: 'n0', type: 'part_views', dx: 0, dy: 0, params: {partName: '低模服装部件', promptHint: '正交无透视四视图，上下高度像素严格对齐', pose: 't', resolution: 1024}},
+      {relId: 'n1', type: 'tripo_mesh', dx: 360, dy: 0, params: {title: 'Smart 四边面白模', quality: 'smart', aiModel: 'P2.0', smartTopology: 'quad', smartUv: false, autoRetexture: false, polyFaces: 20000, textureSize: 4096, pbr: true, removeLighting: true, candidateCount: 1}},
+      {relId: 'n2', type: 'tripo_retexture', dx: 720, dy: 0, params: {title: 'UV 重展开与上色', smartUv: true, retexture: true, textureSize: 4096, pbr: true, removeLighting: true}},
+    ],
+    edges: [
+      {from: 'n0', fromPort: 'views', to: 'n1', toPort: 'views'},
+      {from: 'n1', fromPort: 'mesh', to: 'n2', toPort: 'mesh'},
+      {from: 'n0', fromPort: 'views', to: 'n2', toPort: 'views'},
+    ],
+    autoWire: {connectSource: true, connectStyle: true, connectRatio: true, connectAssembly: true},
   },
 ]);
 
@@ -586,7 +653,7 @@ export function extractBranchPreset(graph, selectedIds = [], {id = '', name = ''
       connectSource: connectSource || branchNodes.some(n => n.type === 'part_views' || n.type === 'balance_views'),
       connectStyle,
       connectRatio,
-      connectAssembly: connectAssembly || branchNodes.some(n => n.type === 'tripo_mesh' || n.type === 'balance_views'),
+      connectAssembly: connectAssembly || branchNodes.some(n => isMeshNodeType(n.type) || n.type === 'balance_views'),
     },
   };
 }
@@ -599,7 +666,7 @@ export function insertBranchPreset(graph, branchDef, {x = null, y = null, autoWi
   if (!branchDef || !Array.isArray(branchDef.nodes) || !branchDef.nodes.length) {
     throw Error('无效的分支预设数据');
   }
-  const existingMid = graph.nodes.filter(n => n.type === 'part_views' || n.type === 'balance_views' || n.type === 'tripo_mesh');
+  const existingMid = graph.nodes.filter(n => n.type === 'part_views' || n.type === 'balance_views' || isMeshNodeType(n.type));
   const maxY = existingMid.reduce((m, n) => Math.max(m, n.y), -180);
   const baseX = Number.isFinite(x) ? Math.round(x) : 410;
   const baseY = Number.isFinite(y) ? Math.round(y) : Math.max(60, maxY + 270);
@@ -643,7 +710,7 @@ export function insertBranchPreset(graph, branchDef, {x = null, y = null, autoWi
         }
       }
       if (branchDef.autoWire.connectAssembly && asm) {
-        if (node.type === 'tripo_mesh' && !outgoingEdges(graph, node.id, 'mesh').length) {
+        if (isMeshNodeType(node.type) && !outgoingEdges(graph, node.id, 'mesh').length) {
           try { connectPorts(graph, node.id, 'mesh', asm.id, 'meshes'); } catch {}
         } else if (node.type === 'balance_views' && !incomingEdges(graph, asm.id, 'guide').length) {
           try { connectPorts(graph, node.id, 'guide', asm.id, 'guide'); } catch {}
@@ -736,12 +803,15 @@ export function nodeInputStamp(graph, nodeId, visited = new Set()) {
     const viewHashes = upstreamViewsNode?.data?.views
       ? GRAPH_VIEWS_4.map(v => upstreamViewsNode.data.views[v]?.sha256 || null)
       : [null, null, null, null];
+    const isSmart = node.params?.quality === 'smart';
     return JSON.stringify([
       'tripo_mesh',
       viewHashes,
       node.params?.quality || 'high',
       node.params?.aiModel || 'H3.5',
       node.params?.smartTopology || 'quad',
+      isSmart ? (node.params?.smartUv !== false) : false,
+      isSmart ? (node.params?.autoRetexture !== false) : true,
       node.params?.polyFaces || 0,
       node.params?.textureSize || 4096,
       Boolean(node.params?.pbr),
@@ -749,6 +819,26 @@ export function nodeInputStamp(graph, nodeId, visited = new Set()) {
       node.params?.candidateCount || 1,
     ]);
   }
+  if (node.type === 'tripo_retexture') {
+    const mEdge = incomingEdges(graph, nodeId, 'mesh')[0];
+    const upMesh = mEdge ? getNode(graph, mEdge.fromNode) : null;
+    const selMesh = upMesh?.data?.candidates?.find(c => c.id === upMesh?.data?.selectedId) || upMesh?.data?.candidates?.[0] || null;
+    const pvNode = resolveUpstreamViewsNode(graph, nodeId);
+    const viewHashes = pvNode?.data?.views
+      ? GRAPH_VIEWS_4.map(v => pvNode.data.views[v]?.sha256 || null)
+      : [null, null, null, null];
+    return JSON.stringify([
+      'tripo_retexture',
+      selMesh?.sha256 || null,
+      node.params?.retexture !== false ? viewHashes : null,
+      node.params?.smartUv !== false,
+      node.params?.retexture !== false,
+      node.params?.textureSize || 4096,
+      node.params?.pbr !== false,
+      Boolean(node.params?.removeLighting),
+    ]);
+  }
+
   if (node.type === 'assembly_export') {
     const meshEdges = incomingEdges(graph, nodeId, 'meshes');
     const selectedMeshes = meshEdges.map(e => {
@@ -804,6 +894,27 @@ export function nodeStatus(graph, nodeId) {
     return {state: 'ready', label: `已生成 (${node.data.candidates.length} 候选)`};
   }
 
+  if (node.type === 'tripo_retexture') {
+    if (node.data?.runtimeStatus) {
+      return {state: 'running', label: node.data.runtimeStatus};
+    }
+    const mEdge = incomingEdges(graph, nodeId, 'mesh')[0];
+    const upMesh = mEdge ? getNode(graph, mEdge.fromNode) : null;
+    const upHasMesh = Array.isArray(upMesh?.data?.candidates) && upMesh.data.candidates.length > 0;
+    const pv = resolveUpstreamViewsNode(graph, nodeId);
+    const viewsReady = pv && GRAPH_VIEWS_4.every(k => pv.data?.views?.[k]?.sha256);
+    const needViews = node.params?.retexture !== false;
+    const hasOut = Array.isArray(node.data?.candidates) && node.data.candidates.length > 0;
+    if (!upHasMesh && !hasOut) return {state: 'waiting', label: '等待上游 3D 白模/原模'};
+    if (needViews && !viewsReady && !hasOut) return {state: 'waiting', label: '等待上色四视图'};
+    if (!hasOut) return {state: 'dirty', label: '待重展 UV / 上色'};
+    const curStamp = nodeInputStamp(graph, nodeId);
+    if (node.data?.completedStamp && node.data.completedStamp !== curStamp) {
+      return {state: 'dirty', label: '上游/参数已改 · 待重跑'};
+    }
+    return {state: 'ready', label: 'UV与贴图已完成'};
+  }
+
   if (node.type === 'assembly_export') {
     const readyMeshes = connectedAssemblyMeshes(graph, nodeId);
     if (!readyMeshes.length) return {state: 'waiting', label: '等待部件 3D 网格接入'};
@@ -826,12 +937,11 @@ export function connectedAssemblyMeshes(graph, assemblyNodeId = null) {
   const out = [];
   for (const [idx, e] of edges.entries()) {
     const mn = getNode(graph, e.fromNode);
-    if (!mn || mn.type !== 'tripo_mesh') continue;
+    if (!mn || !isMeshNodeType(mn.type)) continue;
     const cands = mn.data?.candidates || [];
     if (!cands.length) continue;
     const chosen = cands.find(c => c.id === mn.data.selectedId) || cands[0];
-    const pvEdge = incomingEdges(graph, mn.id, 'views')[0];
-    const pvNode = pvEdge ? getNode(graph, pvEdge.fromNode) : null;
+    const pvNode = resolveUpstreamViewsNode(graph, mn.id);
     const partLabel = pvNode?.params?.partName || mn.params?.title || `部件 ${idx + 1}`;
     out.push({
       meshNodeId: mn.id,

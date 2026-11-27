@@ -118,6 +118,90 @@ export async function runSegmentation(controller, {
   return { status: 'segmented_and_exported', modelId: segId, export: exp.items[0] };
 }
 
+export async function runSmartUvOnly(controller, {
+  filePath,
+  modelId,
+  rotateX = 0,
+  rotateY = 90,
+  rotateZ = 0,
+  outputDir,
+  pollIntervalMs = 5000,
+  timeoutMs = 600000,
+} = {}) {
+  let activeId = modelId;
+  if (filePath) {
+    const up = await controller.uploadModel({ filePath, rotateX, rotateY, rotateZ });
+    activeId = up.modelId;
+  }
+  if (!activeId) throw new Error('runSmartUvOnly requires either "filePath" or "modelId"');
+
+  const page = await controller.getTripoPage({ navigateIfNeeded: false });
+  await page.goto(`${TRIPO_BASE}/smart-uv/${activeId}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await sleep(2500);
+  await controller.assertNotBlocked(page);
+
+  const beforeUv = await controller.status();
+  const knownUv = new Set(beforeUv.assets.map(a => a.modelId));
+
+  let clickedUv = false;
+  const uvBtnDeadline = Date.now() + 15000;
+  while (Date.now() < uvBtnDeadline) {
+    clickedUv = await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('button')].find(b => {
+        if (b.offsetParent === null || b.disabled) return false;
+        const r = b.getBoundingClientRect();
+        const t = (b.innerText || '').replace(/\s+/g, ' ').trim();
+        return r.x < 500 && r.y > window.innerHeight * 0.58 && !/cancel|取消/i.test(t) && /unwrap|smart\s*uv|generate|start|展开|智能\s*uv|生成|开始/i.test(t);
+      });
+      if (!btn) return false;
+      btn.click();
+      return true;
+    });
+    if (clickedUv) break;
+    await sleep(1000);
+  }
+  if (!clickedUv) throw new Error('未能在 Smart UV 面板找到可点击的重展开 UV 执行按钮。');
+
+  await sleep(3000);
+  const uvDoneDeadline = Date.now() + timeoutMs;
+  while (Date.now() < uvDoneDeadline) {
+    const snap = await controller.status();
+    const newAsset = snap.assets.find(a => !knownUv.has(a.modelId));
+    if (newAsset) {
+      activeId = newAsset.modelId;
+      if (newAsset.status === 'ready') break;
+    } else {
+      const state = await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('button')].filter(b => b.offsetParent !== null);
+        const hasCancel = btns.some(b => /^(cancel|取消)$/i.test((b.innerText || '').trim()));
+        const uvBtnReady = btns.some(b => {
+          const r = b.getBoundingClientRect();
+          const t = (b.innerText || '').replace(/\s+/g, ' ').trim();
+          return r.x < 500 && r.y > window.innerHeight * 0.58 && /unwrap|free retry|retry|展开|重试|重新/i.test(t) && !b.disabled;
+        });
+        return { hasCancel, uvBtnReady };
+      });
+      if (!state.hasCancel && state.uvBtnReady) break;
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  // Commit Save if present on Smart UV page
+  const saved = await page.evaluate(() => {
+    const saveBtn = [...document.querySelectorAll('button')].find(b => {
+      if (b.offsetParent === null || b.disabled || b.closest('[role="dialog"]')) return false;
+      return /^(Save|保存)$/i.test((b.innerText || '').replace(/\s+/g, ' ').trim());
+    });
+    if (saveBtn) { saveBtn.click(); return true; }
+    return false;
+  });
+  if (saved) await sleep(1800);
+
+  if (!outputDir) return { status: 'smart_uv_done', modelId: activeId };
+  const exp = await controller.exportModels({ modelIds: [activeId], format: 'FBX', preset: 'Blender', outputDir });
+  return { status: 'smart_uv_exported', modelId: activeId, export: exp.items[0] };
+}
+
 export async function runRetexture(controller, {
   filePath,
   modelId,
@@ -126,6 +210,8 @@ export async function runRetexture(controller, {
   rotateZ = 0,
   smartUV = true,
   frontPng,
+  leftPng,
+  rightPng,
   backPng,
   textureQuality = '4K',
   pbr = true,
@@ -140,114 +226,93 @@ export async function runRetexture(controller, {
     activeId = up.modelId;
   }
   if (!activeId) throw new Error('runRetexture requires either "filePath" or "modelId"');
-  if (frontPng) await fs.access(path.resolve(frontPng));
-  if (backPng) await fs.access(path.resolve(backPng));
+  for (const imgP of [frontPng, leftPng, rightPng, backPng].filter(Boolean)) {
+    await fs.access(path.resolve(imgP));
+  }
 
   const page = await controller.getTripoPage({ navigateIfNeeded: false });
 
-  // Step A: Optional Smart UV
+  // Step A: Optional Smart UV Unwrap before baking textures
   if (smartUV) {
-    await page.goto(`${TRIPO_BASE}/smart-uv/${activeId}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await controller.assertNotBlocked(page);
-
-    // Wait up to 15s for "Unwrap UV" button to hydrate and become enabled
-    let clickedUv = false;
-    const uvBtnDeadline = Date.now() + 15000;
-    const beforeUv = await controller.status();
-    const knownUv = new Set(beforeUv.assets.map(a => a.modelId));
-    while (Date.now() < uvBtnDeadline) {
-      clickedUv = await page.evaluate(() => {
-        const btn = [...document.querySelectorAll('button')].find(b => {
-          if (b.offsetParent === null || b.disabled) return false;
-          const r = b.getBoundingClientRect();
-          const t = (b.innerText || '').replace(/\s+/g, ' ').trim();
-          return r.x < 500 && r.y > window.innerHeight * 0.6 && /unwrap|smart uv|generate|start/i.test(t);
-        });
-        if (!btn) return false;
-        btn.click();
-        return true;
-      });
-      if (clickedUv) break;
-      await sleep(1000);
-    }
-    if (!clickedUv) throw new Error('未能在 Smart UV 面板找到可点击的执行按钮。');
-
-    // Wait for Smart UV completion (either new asset card or in-place completion)
-    await sleep(3000);
-    const uvDoneDeadline = Date.now() + timeoutMs;
-    while (Date.now() < uvDoneDeadline) {
-      const snap = await controller.status();
-      const newAsset = snap.assets.find(a => !knownUv.has(a.modelId));
-      if (newAsset) {
-        activeId = newAsset.modelId;
-        if (newAsset.status === 'ready') break;
-      } else {
-        const state = await page.evaluate(() => {
-          const btns = [...document.querySelectorAll('button')].filter(b => b.offsetParent !== null);
-          const hasCancel = btns.some(b => /^cancel$/i.test((b.innerText || '').trim()));
-          const uvBtnReady = btns.some(b => {
-            const r = b.getBoundingClientRect();
-            const t = (b.innerText || '').replace(/\s+/g, ' ').trim();
-            return r.x < 500 && r.y > window.innerHeight * 0.6 && /unwrap|free retry|retry/i.test(t) && !b.disabled;
-          });
-          return { hasCancel, uvBtnReady };
-        });
-        if (!state.hasCancel && state.uvBtnReady) break;
-      }
-      await sleep(pollIntervalMs);
-    }
+    const uvRes = await runSmartUvOnly(controller, { modelId: activeId, pollIntervalMs, timeoutMs });
+    activeId = uvRes.modelId;
   }
 
-  // Step B: 4K Texture generation with Front/Back reference PNGs
+  // Step B: 4K/8K Texture generation with Multi-View (Front/Left/Right/Back) reference PNGs
   await page.goto(`${TRIPO_BASE}/texture/${activeId}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await sleep(3500);
+  await sleep(3200);
   await controller.assertNotBlocked(page);
 
-  // Switch to Multi-view / Image reference in Texture panel if needed & upload Front / Back PNGs
-  await controller.withUiShield(page, '配置纹理重绘参数', async (ui) => {
-    if (frontPng || backPng) {
-      const modeRect = await page.evaluate((hasBoth) => {
+  await controller.withUiShield(page, '配置重展开 UV 后的多视图上色参数', async (ui) => {
+    const hasAnyView = Boolean(frontPng || leftPng || rightPng || backPng);
+    const wantMultiView = Boolean(leftPng || rightPng || (frontPng && backPng));
+
+    if (hasAnyView) {
+      const modeRect = await page.evaluate((wantMulti) => {
         const leftButtons = [...document.querySelectorAll('button')].filter(b => {
           if (b.offsetParent === null) return false;
           const r = b.getBoundingClientRect();
-          return r.x > 40 && r.x < 340 && r.y > 90 && r.y < 230 && r.width < 90;
+          return r.x > 40 && r.x < 340 && r.y > 90 && r.y < 235 && r.width < 95 && r.height < 55;
         });
         const iconBtn = leftButtons.find(b =>
-          hasBoth
+          wantMulti
             ? /multi-view|multiview|i-tripo:geometry/i.test(b.innerHTML)
             : /add-image|image/i.test(b.innerHTML)
-        );
+        ) || leftButtons[wantMulti ? 1 : 0];
         if (!iconBtn) return null;
         const r = iconBtn.getBoundingClientRect();
         return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-      }, Boolean(frontPng && backPng));
+      }, wantMultiView);
       if (modeRect) {
         await ui.click(modeRect.x, modeRect.y);
-        await sleep(700);
+        await sleep(650);
       }
+
+      // Clear any previously uploaded images in left Texture panel
+      await page.evaluate(() => {
+        const trashBtns = [...document.querySelectorAll('button')].filter(b => {
+          const r = b.getBoundingClientRect();
+          return r.x > 40 && r.x < 350 && r.y > 150 && r.y < 540 && /trash|delete/i.test(b.innerHTML);
+        });
+        trashBtns.forEach(b => b.click());
+      });
+      await sleep(450);
 
       const inputs = await page.$$('input[type="file"]');
       const imgInputs = [];
       for (const h of inputs) {
-        const ok = await h.evaluate(el => {
+        const info = await h.evaluate(el => {
           const acc = (el.getAttribute('accept') || '').toLowerCase();
           const r = (el.parentElement || el).getBoundingClientRect();
-          return !/fbx|glb|obj/i.test(acc) && r.x < window.innerWidth * 0.5;
+          const ok = !/fbx|glb|obj|stl/i.test(acc) && r.x < window.innerWidth * 0.5;
+          return { ok, x: r.x, y: r.y };
         });
-        if (ok) imgInputs.push(h);
+        if (info.ok) imgInputs.push({ handle: h, x: info.x, y: info.y });
       }
+      imgInputs.sort((a, b) => (Math.abs(a.y - b.y) > 20 ? a.y - b.y : a.x - b.x));
 
-      if (frontPng && imgInputs[0]) {
-        await imgInputs[0].uploadFile(path.resolve(frontPng));
-        await sleep(1500);
-      }
-      if (backPng) {
-        // In Multi-view [Front, Left, Right, Back], Back is the last slot (index 3), or index 1 if 2-slot
-        const backIdx = imgInputs.length >= 4 ? 3 : 1;
-        if (imgInputs[backIdx]) {
-          await imgInputs[backIdx].uploadFile(path.resolve(backPng));
-          await sleep(3500);
+      if (imgInputs.length >= 4) {
+        const slots = [frontPng, leftPng, rightPng, backPng];
+        for (let i = 0; i < 4; i++) {
+          if (slots[i]) {
+            await imgInputs[i].handle.uploadFile(path.resolve(slots[i]));
+            await sleep(450);
+          }
         }
+        await sleep(1600);
+      } else if (imgInputs.length >= 2) {
+        if (frontPng) {
+          await imgInputs[0].handle.uploadFile(path.resolve(frontPng));
+          await sleep(800);
+        }
+        const secondImg = backPng || rightPng || leftPng;
+        if (secondImg) {
+          await imgInputs[1].handle.uploadFile(path.resolve(secondImg));
+          await sleep(1600);
+        }
+      } else if (imgInputs.length === 1 && frontPng) {
+        await imgInputs[0].handle.uploadFile(path.resolve(frontPng));
+        await sleep(1200);
       }
     }
 
@@ -318,7 +383,7 @@ export async function runRetexture(controller, {
           if (b.offsetParent === null || b.disabled) return false;
           const r = b.getBoundingClientRect();
           const t = (b.innerText || '').replace(/\s+/g, ' ').trim();
-          return r.x < 400 && r.y > window.innerHeight * 0.65 && /generate|texture/i.test(t);
+          return r.x < 400 && r.y > window.innerHeight * 0.62 && !/cancel|取消/i.test(t) && /generate|texture|retexture|生成|上色|贴图|纹理/i.test(t);
         });
         if (!btn) return false;
         btn.click();

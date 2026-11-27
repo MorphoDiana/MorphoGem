@@ -125,9 +125,27 @@ def run(source_mgem, out_dir, assembly_node_id=''):
     stage_root = out / 'staged_parts'
     stage_root.mkdir(parents=True, exist_ok=True)
 
+    def find_upstream_part_views(nid, seen=None):
+        seen = seen or set()
+        if not nid or nid in seen:
+            return None
+        seen.add(nid)
+        nd = nodes.get(nid)
+        if not nd:
+            return None
+        if nd.get('type') == 'part_views':
+            return nd
+        v_e = next((x for x in edges if x.get('toNode') == nid and x.get('toPort') == 'views'), None)
+        if v_e and nodes.get(v_e['fromNode'], {}).get('type') == 'part_views':
+            return nodes.get(v_e['fromNode'])
+        m_e = next((x for x in edges if x.get('toNode') == nid and x.get('toPort') == 'mesh'), None)
+        if m_e:
+            return find_upstream_part_views(m_e['fromNode'], seen)
+        return None
+
     for idx, edge in enumerate(mesh_edges):
         mn = nodes.get(edge['fromNode'])
-        if not mn or mn.get('type') != 'tripo_mesh':
+        if not mn or mn.get('type') not in ('tripo_mesh', 'tripo_retexture'):
             continue
         cands = (mn.get('data') or {}).get('candidates') or []
         if not cands:
@@ -135,8 +153,7 @@ def run(source_mgem, out_dir, assembly_node_id=''):
         sel_id = (mn.get('data') or {}).get('selectedId')
         cand = next((c for c in cands if c.get('id') == sel_id), cands[0])
 
-        pv_edge = next((e for e in edges if e.get('toNode') == mn['id'] and e.get('toPort') == 'views'), None)
-        pv_node = nodes.get(pv_edge['fromNode']) if pv_edge else None
+        pv_node = find_upstream_part_views(mn['id'])
         part_label = ((pv_node or {}).get('params') or {}).get('partName') or (mn.get('params') or {}).get('title') or f'Part_{idx + 1}'
         clean_label = ''.join(ch if ch not in '\\/:*?"<>|' else '_' for ch in str(part_label)).strip() or f'Part_{idx + 1}'
 
