@@ -10,6 +10,8 @@ const { autoUpdater } = electronUpdaterPkg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isSmokeTest = process.argv.includes('--smoke-test');
 
+import { loginTripoViaExternalBrowser } from './tripo-external-login.mjs';
+
 if (process.platform === 'win32') {
   app.setAppUserModelId('ai.morphogem.desktop');
 }
@@ -688,6 +690,153 @@ function buildAgentMcpConfigJson() {
   }, null, 2);
 }
 
+/**
+ * Run the Google sign-in through a local browser and import the session.
+ *
+ * Google rejects OAuth requests coming from an Electron binary at the server
+ * side (accounts.google.com/v3/signin/rejected, "This browser or app may not be
+ * secure"), and that decision happens before any client-side code runs. The UA,
+ * the UA-CH brands, navigator.webdriver and window.chrome are all already
+ * spoofed and it still refuses.
+ *
+ * So instead of disguising the client, let a real browser do the authentication
+ * the user already has, then copy the cookies Tripo sets back into the
+ * persist:tripo partition. No credentials are fabricated.
+ *
+ * Tripo uses Ory Kratos; the cookie that actually represents a signed-in
+ * session is the httpOnly ory_kratos_session token, which page JavaScript
+ * cannot read by design and is only visible over CDP.
+ */
+let externalLoginInFlight = null;
+
+async function beginExternalGoogleLogin() {
+  if (externalLoginInFlight) return externalLoginInFlight;
+
+  externalLoginInFlight = (async () => {
+    try {
+      const result = await loginTripoViaExternalBrowser({
+        userDataDir: paths.localDir,
+        onStatus: (s) => {
+          const labels = {
+            launching: '正在启动浏览器完成 Google 登录…',
+            'waiting-login': '请在打开的浏览器里完成 Google 登录…',
+            'logged-in': '登录成功，正在回填会话…',
+          };
+          if (labels[s.phase]) {
+            uiState.tripoActivity = { active: true, label: labels[s.phase] };
+          } else if (s.phase === 'harvested') {
+            uiState.tripoActivity = { active: true, label: `已取得 ${s.count} 条 cookie，正在写入客户端…` };
+          }
+          pushUiState();
+        },
+      });
+
+      const tripoSes = session.fromPartition('persist:tripo');
+      const SESSION_COOKIE = 'ory_kratos_session';
+      const isTripoDomain = (domain) => {
+        const d = (domain || '').replace(/^\./, '');
+        return d === 'tripo3d.ai' || d.endsWith('.tripo3d.ai')
+          || d === 'tripo3d.com' || d.endsWith('.tripo3d.com')
+          || d.endsWith('.msapi.tripo3d.ai');
+      };
+
+      const toDetails = (c) => {
+        const domain = (c.domain || '').replace(/^\./, '');
+        const sameSite = (() => {
+          const v = String(c.sameSite || '').toLowerCase();
+          if (v === 'strict') return 'strict';
+          if (v === 'lax') return 'lax';
+          if (v === 'none' || v === 'no_restriction') return 'no_restriction';
+          return 'unspecified';
+        })();
+        const details = {
+          url: `https://${domain}${c.path || '/'}`,
+          name: c.name,
+          value: c.value,
+          path: c.path || '/',
+          secure: Boolean(c.secure),
+          httpOnly: Boolean(c.httpOnly),
+          sameSite,
+        };
+        if (typeof c.expires === 'number' && c.expires > 0) details.expirationDate = c.expires;
+        if (c.domain && c.domain.startsWith('.')) details.domain = c.domain;
+        return details;
+      };
+
+      let written = 0;
+      const failed = [];
+      for (const c of result.cookies) {
+        try {
+          await tripoSes.cookies.set(toDetails(c));
+          written += 1;
+        } catch {
+          failed.push(c);
+        }
+      }
+      for (const c of failed) {
+        try {
+          await tripoSes.cookies.set(toDetails(c));
+          written += 1;
+        } catch {
+          // reported by the verification below
+        }
+      }
+
+      // The session cookie has to land in the app, otherwise the browser login
+      // achieved nothing for us. Report it as a failure instead of pretending.
+      const hasSession = async () => {
+        const list = await tripoSes.cookies.get({ name: SESSION_COOKIE });
+        return list.some(c => isTripoDomain(c.domain) && c.value);
+      };
+      let ok = await hasSession();
+      if (!ok) {
+        const sess = result.cookies.find(c => c.name === SESSION_COOKIE);
+        if (sess) {
+          try {
+            await tripoSes.cookies.set(toDetails(sess));
+            ok = await hasSession();
+          } catch {
+            // stays false
+          }
+        }
+      }
+      if (!ok) {
+        uiState.tripoActivity = { active: false, label: '' };
+        uiState.tripoBlocked = 'AUTH_REQUIRED';
+        pushUiState();
+        await showEmailLoginHintInTripoView();
+        return;
+      }
+
+      if (tripoView && !tripoView.webContents.isDestroyed()) {
+        await tripoView.webContents.loadURL(TRIPO_START_URL).catch(() => {});
+        await new Promise(r => setTimeout(r, 6000));
+      }
+      await refreshTripoQuickState();
+
+      let waited = 0;
+      while (!uiState.tripoReady && waited < 20000) {
+        await new Promise(r => setTimeout(r, 2000));
+        waited += 2000;
+        await refreshTripoQuickState();
+      }
+
+      uiState.tripoActivity = { active: false, label: '' };
+      uiState.tripoBlocked = uiState.tripoReady ? null : 'AUTH_REQUIRED';
+      pushUiState();
+    } catch {
+      uiState.tripoActivity = { active: false, label: '' };
+      uiState.tripoBlocked = 'AUTH_REQUIRED';
+      pushUiState();
+      await showEmailLoginHintInTripoView();
+    } finally {
+      externalLoginInFlight = null;
+    }
+  })();
+
+  return externalLoginInFlight;
+}
+
 function registerIpc() {
   ipcMain.handle('desktop:get-state', () => uiState);
   ipcMain.handle('desktop:switch-tab', (_e, tab) => {
@@ -938,10 +1087,12 @@ app.whenReady().then(async () => {
     tripoView.webContents.setUserAgent(CLEAN_CHROME_UA);
     tripoView.webContents.setWindowOpenHandler(({ url }) => {
       if (isGoogleAuthPopupUrl(url)) {
-        // Block duplicate external Google OAuth popups (cookies/opener cannot return from system browser,
-        // and Google blocks embedded Electron OAuth at server level) and guide user to Email sign-in.
+        // Google refuses OAuth from an Electron binary server-side, so the
+        // in-app popup can never complete. Hand the authentication step to a
+        // local Chrome / Edge instead, then copy the resulting session back
+        // into the persist:tripo partition.
         setActiveTab('tripo');
-        void showEmailLoginHintInTripoView();
+        void beginExternalGoogleLogin();
         return { action: 'deny' };
       }
       if (url.startsWith('https://accounts.tripo3d.ai')) {
