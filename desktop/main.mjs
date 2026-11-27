@@ -10,6 +10,8 @@ const { autoUpdater } = electronUpdaterPkg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isSmokeTest = process.argv.includes('--smoke-test');
 
+import { loginTripoViaExternalBrowser } from './tripo-external-login.mjs';
+
 if (process.platform === 'win32') {
   app.setAppUserModelId('ai.morphogem.desktop');
 }
@@ -607,6 +609,166 @@ function buildAgentMcpConfigJson() {
   }, null, 2);
 }
 
+/**
+ * 用系统里的 Chrome / Edge 完成 Tripo 的 Google 登录，再把会话搬回 persist:tripo。
+ *
+ * 背景：Google 的账号系统会拒绝来自 Electron 二进制的 OAuth 请求
+ * （accounts.google.com/v3/signin/rejected，"此浏览器或应用可能不安全"），
+ * 这是服务端基于二进制特征做的判定，JS 层无法绕过。实测同一账号在
+ * Edge / Chrome 里完全正常，所以把「认证」这一步交给本机真实浏览器。
+ *
+ * 全过程只使用官方页面和本机浏览器，拿到的是用户自己登录后 Tripo 正常种下的
+ * cookie（Ory Kratos 的 httpOnly 会话令牌），不伪造任何凭据。
+ */
+let tripoLoginInFlight = null;
+
+async function loginTripoWithExternalBrowser() {
+  if (tripoLoginInFlight) return tripoLoginInFlight;
+
+  tripoLoginInFlight = (async () => {
+    try {
+      const result = await loginTripoViaExternalBrowser({
+        userDataDir: paths.localDir,
+        onStatus: (s) => {
+          const labels = {
+            preparing: '正在准备浏览器…',
+            launching: '正在启动浏览器完成 Google 登录…',
+            'waiting-login': '请在打开的浏览器里完成 Google 登录…',
+            'logged-in': '登录成功，正在回填会话…',
+          };
+          if (labels[s.phase]) {
+            uiState.tripoActivity = { active: true, label: labels[s.phase] };
+          } else if (s.phase === 'harvested') {
+            uiState.tripoActivity = { active: true, label: `已取得 ${s.count} 条 cookie，正在写入客户端…` };
+          }
+          pushUiState();
+        },
+      });
+
+      // session.fromPartition 是单例，这里重新取到的就是同一个 persist:tripo 分区
+      const tripoSes = session.fromPartition('persist:tripo');
+
+      // Tripo 用 Ory Kratos 做身份认证，真正的会话令牌是 httpOnly 的
+      // ory_kratos_session —— 页面 JS 读不到，只有 CDP 层能取，也必须一起搬。
+      const SESSION_COOKIE = 'ory_kratos_session';
+      const isTripoDomain = (domain) => {
+        const d = (domain || '').replace(/^\./, '');
+        return d === 'tripo3d.ai' || d.endsWith('.tripo3d.ai')
+          || d === 'tripo3d.com' || d.endsWith('.tripo3d.com')
+          || d.endsWith('.msapi.tripo3d.ai');
+      };
+
+      const toDetails = (c) => {
+        const domain = (c.domain || '').replace(/^\./, '');
+        const sameSite = (() => {
+          const v = String(c.sameSite || '').toLowerCase();
+          if (v === 'strict') return 'strict';
+          if (v === 'lax') return 'lax';
+          if (v === 'none' || v === 'no_restriction') return 'no_restriction';
+          return 'unspecified';
+        })();
+        const details = {
+          url: `https://${domain}${c.path || '/'}`,
+          name: c.name,
+          value: c.value,
+          path: c.path || '/',
+          secure: Boolean(c.secure),
+          httpOnly: Boolean(c.httpOnly),
+          sameSite,
+        };
+        if (typeof c.expires === 'number' && c.expires > 0) details.expirationDate = c.expires;
+        // 只在原 cookie 本来就是域 cookie 时才写 domain，避免把 host-only 放宽
+        if (c.domain && c.domain.startsWith('.')) details.domain = c.domain;
+        return details;
+      };
+
+      let written = 0;
+      const failed = [];
+      for (const c of result.cookies) {
+        try {
+          await tripoSes.cookies.set(toDetails(c));
+          written += 1;
+        } catch {
+          failed.push(c);
+        }
+      }
+      // 失败的单独重试一次
+      for (const c of failed) {
+        try {
+          await tripoSes.cookies.set(toDetails(c));
+          written += 1;
+        } catch {
+          // 真写不进去留给下面校验
+        }
+      }
+
+      // 会话 cookie 必须在客户端生效，否则等同于没登录
+      const checkHasSession = async () => {
+        const list = await tripoSes.cookies.get({ name: SESSION_COOKIE });
+        return list.some(c => isTripoDomain(c.domain) && c.value);
+      };
+
+      let sessionOk = await checkHasSession();
+      if (!sessionOk) {
+        const sess = result.cookies.find(c => c.name === SESSION_COOKIE);
+        if (sess) {
+          try {
+            await tripoSes.cookies.set(toDetails(sess));
+            sessionOk = await checkHasSession();
+          } catch {
+            // 保持 sessionOk = false
+          }
+        }
+      }
+
+      if (!sessionOk) {
+        uiState.tripoActivity = { active: false, label: '' };
+        pushUiState();
+        return {
+          ok: false,
+          code: 'COOKIE_WRITE_FAILED',
+          message: '登录成功但会话 cookie 没能写入客户端',
+        };
+      }
+
+      if (tripoView && !tripoView.webContents.isDestroyed()) {
+        await tripoView.webContents.loadURL(TRIPO_START_URL).catch(() => {});
+        await new Promise(r => setTimeout(r, 6000));
+      }
+      await refreshTripoQuickState();
+
+      // 页面渲染可能慢于 cookie 写入，最多再等 20 秒
+      let waited = 0;
+      while (!uiState.tripoReady && waited < 20000) {
+        await new Promise(r => setTimeout(r, 2000));
+        waited += 2000;
+        await refreshTripoQuickState();
+      }
+
+      uiState.tripoActivity = { active: false, label: '' };
+      uiState.tripoBlocked = uiState.tripoReady ? null : 'AUTH_REQUIRED';
+      pushUiState();
+
+      return {
+        ok: true,
+        browser: result.browser,
+        cookiesWritten: written,
+        ready: uiState.tripoReady,
+        credits: uiState.tripoCredits,
+        sessionEstablished: true,
+      };
+    } catch (err) {
+      uiState.tripoActivity = { active: false, label: '' };
+      pushUiState();
+      return { ok: false, code: err.code || 'ERROR', message: String(err.message || err) };
+    } finally {
+      tripoLoginInFlight = null;
+    }
+  })();
+
+  return tripoLoginInFlight;
+}
+
 function registerIpc() {
   ipcMain.handle('desktop:get-state', () => uiState);
   ipcMain.handle('desktop:switch-tab', (_e, tab) => {
@@ -723,6 +885,9 @@ function registerIpc() {
     const target = uiState.activeTab === 'tripo' ? tripoView : workbenchView;
     target?.webContents.reload();
     return true;
+  });
+  ipcMain.handle('desktop:tripo-google-login', async () => {
+    return loginTripoWithExternalBrowser();
   });
   ipcMain.handle('desktop:check-tripo', async () => {
     await refreshTripoQuickState();

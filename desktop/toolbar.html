@@ -253,6 +253,7 @@
         <button id="btnChooseDownloads" class="btn" type="button" title="更改默认导出目录">⚙</button>
       </div>
       <button id="btnCopyMcp" class="btn" type="button" title="复制供 AI Agent 直接连接 MorphoGem 的 MCP 配置">复制 Agent 配置</button>
+      <button id="btnGoogleLogin" class="btn" type="button" title="用本机 Chrome / Edge 完成 Tripo 的 Google 登录，成功后自动回填会话">🔐 Google 登录</button>
       <button id="btnUpdate" class="btn" type="button" title="从 GitHub Releases 检查客户端更新">🔄 检查更新</button>
       <button id="btnReload" class="btn" type="button" title="刷新当前标签视图">刷新</button>
     </div>
@@ -382,6 +383,40 @@
         b.classList.add('copied');
         setTimeout(() => { b.textContent = old; b.classList.remove('copied'); }, 2200);
       }
+    };
+
+
+    $('btnGoogleLogin').onclick = async () => {
+      const b = $('btnGoogleLogin');
+      const old = b.textContent;
+      const restore = () => { b.textContent = old; b.disabled = false; };
+      b.textContent = '⏳ 等待浏览器登录…';
+      b.disabled = true;
+      let res;
+      try {
+        res = await window.morphogemDesktop.tripoGoogleLogin();
+      } catch (e) {
+        res = { ok: false, message: String(e) };
+      } finally {
+        b.disabled = false;
+      }
+      if (res && res.ok) {
+        b.textContent = res.ready
+          ? (Number.isInteger(res.credits) ? '✓ 已登录 · ' + res.credits + ' 积分' : '✓ 已登录')
+          : '✓ 会话已写入（刷新可生效）';
+      } else if (res && res.code === 'LOGIN_TIMEOUT') {
+        b.textContent = '✗ 等待超时';
+      } else if (res && res.code === 'COOKIE_WRITE_FAILED') {
+        b.textContent = '✗ 凭据写入失败';
+      } else if (res && res.code === 'NO_BROWSER') {
+        b.textContent = '✗ 未找到 Chrome/Edge';
+      } else if (res && res.code === 'BROWSER_LAUNCH_FAILED') {
+        b.textContent = '✗ 浏览器启动失败';
+      } else {
+        b.textContent = '✗ 登录未完成';
+      }
+      setTimeout(restore, 3500);
+      await window.morphogemDesktop.checkTripo().then(render).catch(() => {});
     };
 
     window.morphogemDesktop.onState(render);

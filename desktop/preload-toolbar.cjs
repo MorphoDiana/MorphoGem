@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('morphogemDesktop', {
   copyMcpConfig: () => ipcRenderer.invoke('desktop:copy-mcp-config'),
   reloadActive: () => ipcRenderer.invoke('desktop:reload-active'),
   checkTripo: () => ipcRenderer.invoke('desktop:check-tripo'),
+  tripoGoogleLogin: () => ipcRenderer.invoke('desktop:tripo-google-login'),
   onState: (cb) => {
     const handler = (_event, state) => cb(state);
     ipcRenderer.on('desktop:state', handler);
