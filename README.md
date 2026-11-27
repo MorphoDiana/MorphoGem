@@ -47,8 +47,8 @@
 2. **先复制 Agent 配置交给 AI 安装（关键！）**：
    点击客户端最顶栏右侧的 **`[复制 Agent 配置]`** 按钮 → 打开 **Google Antigravity（切到 `Neon` 或 `Carbon`）**，直接发给它：
    > `请帮我把下面这段 MorphoGem 的 MCP 配置安装写入到我的 MCP 配置文件里：` + `Ctrl+V` 粘贴刚刚复制的 JSON！
-3. **登录一次 Tripo & 绑定 Blender**：
-   - 点击顶栏左上角 **`[Tripo 账号工作区]`** 登录一次邮箱账号（Cookie 自动持久保存在本地 `userdata/`，后续免登），再切回 **`[节点角色工坊]`**。
+3. **登录一次 Tripo（推荐邮箱登录） & 绑定 Blender**：
+   - 点击顶栏左上角 **`[Tripo 账号工作区]`**，使用 **「邮箱 + 密码 / 邮箱验证码」** 登录一次 Tripo（*注：因 Google 官方安全策略限制内嵌桌面客户端授权，请勿使用 Google 快捷登录；邮箱登录一次后 Cookie 自动加密保存在本地 `userdata/`，后续永久免登*），看到顶栏亮起绿灯 **`Tripo 已就绪`** 后切回 **`[节点角色工坊]`**。
    - 点击顶栏 **`⚠ 点击配置 Blender 路径`**（或右上角 `⚙ 设置` → `自动扫描`）选中本机安装的 `blender.exe`（推荐 Blender 4.2 ~ 5.2）。
 
 ### 第 2 步：选模板、锁头身比 & 传原画 / Mask | Pick Template, Ratio & Mask

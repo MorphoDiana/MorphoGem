@@ -36,9 +36,9 @@ After installing and launching **MorphoGem**, complete these 3 one-time steps:
 
 3. Your Agent will automatically register `tripo-studio` so it can interact seamlessly with MorphoGem's embedded daemon!
 
-### ② Sign In Once to the Embedded Tripo Workspace
+### ② Sign In Once to the Embedded Tripo Workspace (Email Recommended)
 1. Click the **`[Tripo 账号工作区]`** tab on the top-left desktop bar.
-2. Sign in once with your Tripo Studio account.
+2. Sign in once using **Email + Password / Verification Code** (*Note: Google OAuth blocks embedded desktop clients at the server level, so please use direct Email sign-in*).
 3. Once the status indicator turns green (`Tripo Ready`), switch back to the left studio tab (`[节点角色工坊]`). You can also click **`🌐 中文 / 🌐 EN`** on the Studio header anytime to switch the entire Studio UI and AI prompts to **English**!
    *(💡 Your login session is persisted safely inside `<InstallDir>/userdata/` across restarts and app upgrades.)*
 

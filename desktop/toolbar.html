@@ -322,10 +322,13 @@
       }
 
       const bp = $('blockedPill');
-      if (s.tripoBlocked) {
+      if (s.googleAuthHint) {
+        bp.hidden = false;
+        bp.textContent = '💡 已拦截无效 Google 弹窗：请直接使用 Tripo「邮箱 + 密码/验证码」登录（一次登录永久保存）';
+      } else if (s.tripoBlocked) {
         bp.hidden = false;
         bp.textContent = s.tripoBlocked === 'AUTH_REQUIRED'
-          ? '⚠ 请在 Tripo 工作区登录一次邮箱账号（自动持久保存）'
+          ? '⚠ 请在 Tripo 工作区使用「邮箱账号」登录一次（推荐邮箱密码/验证码，自动持久保存）'
           : '⚠ 请在 Tripo 工作区点击完成人机验证后继续';
       } else {
         bp.hidden = true;

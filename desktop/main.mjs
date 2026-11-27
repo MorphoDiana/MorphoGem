@@ -152,6 +152,7 @@ app.setPath('userData', paths.chromiumDir);
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
 app.commandLine.appendSwitch('remote-debugging-port', process.env.MORPHOGEM_INTERNAL_CDP_PORT || '0');
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+app.commandLine.appendSwitch('disable-features', 'FedCm,FedCmAutoSignin,FedCmIdpSigninStatus');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 
@@ -171,6 +172,17 @@ const chromeFullVer = process.versions.chrome || '134.0.6998.89';
 const chromeMajorVer = chromeFullVer.split('.')[0];
 const CLEAN_CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeFullVer} Safari/537.36`;
 
+function isGoogleAuthPopupUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    return ['accounts.google.com', 'oauth2.googleapis.com', 'accounts.youtube.com'].some(
+      h => u.hostname === h || u.hostname.endsWith('.' + h)
+    );
+  } catch {
+    return false;
+  }
+}
+
 let win = null;
 let toolbarView = null;
 let workbenchView = null;
@@ -180,6 +192,7 @@ let tripoDaemon = null;
 let jobsModRef = null;
 let statusPollTimer = null;
 let savedNoticeTimer = null;
+let googleHintTimer = null;
 
 const uiState = {
   appVersion: app.getVersion(),
@@ -193,6 +206,7 @@ const uiState = {
   tripoReady: false,
   tripoCredits: null,
   tripoBlocked: null, // null | 'AUTH_REQUIRED' | 'CAPTCHA_OR_CHALLENGE'
+  googleAuthHint: false,
   tripoActivity: { active: false, label: '' },
   download: { active: false, filename: '', received: 0, total: 0 },
   lastSavedDownload: null, // { filename, fullPath }
@@ -540,6 +554,50 @@ function configureTripoSession() {
   return tripoSes;
 }
 
+async function showEmailLoginHintInTripoView() {
+  if (!tripoView || tripoView.webContents.isDestroyed()) return;
+  uiState.tripoBlocked = 'AUTH_REQUIRED';
+  uiState.tripoReady = false;
+  uiState.googleAuthHint = true;
+  pushUiState();
+  if (googleHintTimer) clearTimeout(googleHintTimer);
+  googleHintTimer = setTimeout(() => {
+    uiState.googleAuthHint = false;
+    pushUiState();
+  }, 9000);
+
+  try {
+    await tripoView.webContents.executeJavaScript(`(() => {
+      const ID = '__morphogem_email_login_tip__';
+      document.getElementById(ID)?.remove();
+      const bar = document.createElement('div');
+      bar.id = ID;
+      bar.style.cssText = [
+        'position:fixed',
+        'top:14px',
+        'left:50%',
+        'transform:translateX(-50%)',
+        'z-index:2147483647',
+        'padding:10px 18px',
+        'border-radius:999px',
+        'background:rgba(15,23,42,0.96)',
+        'border:1.5px solid #f59e0b',
+        'box-shadow:0 8px 28px rgba(0,0,0,0.5)',
+        'color:#fef3c7',
+        'font-size:13px',
+        'font-weight:700',
+        'font-family:system-ui,"Microsoft YaHei UI",sans-serif',
+        'pointer-events:none',
+      ].join(';');
+      bar.textContent = '💡 Google 官方策略限制桌面内嵌登录，请直接使用弹窗中的「邮箱 + 密码 / 验证码」登录 Tripo（登录一次永久免登）';
+      (document.body || document.documentElement).appendChild(bar);
+      setTimeout(() => bar.remove(), 7500);
+    })()`, true);
+  } catch {
+    // ignore
+  }
+}
+
 async function refreshTripoQuickState() {
   if (!tripoView || tripoView.webContents.isDestroyed()) return;
   try {
@@ -550,16 +608,28 @@ async function refreshTripoQuickState() {
       const hasTurnstile = !!document.querySelector('iframe[src*="challenges.cloudflare.com"], .cf-turnstile, #challenge-running')
         || /verify you are human|just a moment|請稍候|请稍候|checking your browser/i.test(title);
       if (hasTurnstile && bodyText.length < 800) return { blocked: 'CAPTCHA_OR_CHALLENGE', credits: null, ready: false };
+      const isVisible = el => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const cs = getComputedStyle(el);
+        return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity || 1) > 0.05;
+      };
+      // Tripo renders <main> and Generate buttons even when signed out, so any visible Sign in / 登录 button means signed out.
+      const hasVisibleLogin = [...document.querySelectorAll('button, a')].some(
+        el => /^(sign in|log in|登录|登入)$/i.test((el.innerText || '').trim()) && isVisible(el)
+      );
+      if (hasVisibleLogin || url.startsWith('https://accounts.tripo3d.ai')) {
+        return { blocked: 'AUTH_REQUIRED', credits: null, ready: false };
+      }
       const buttons = [...document.querySelectorAll('button, a')].map(el => (el.innerText || '').trim());
-      const hasLogin = buttons.some(t => /^(sign in|log in|登录|登入)$/i.test(t));
       const hasWorkspace = !!document.querySelector('main') && buttons.some(t => /generate|hd model|export/i.test(t));
-      if (hasLogin && !hasWorkspace) return { blocked: 'AUTH_REQUIRED', credits: null, ready: false };
       const creditsEl = [...document.querySelectorAll('header *, banner *, nav *, body *')].find(el => {
-        if (el.children.length > 0 || el.closest('button')) return false;
+        if (el.children.length > 0 || el.closest('button, a')) return false;
         const txt = (el.textContent || '').trim();
         if (!/^\\d{1,7}$/.test(txt)) return false;
         const r = el.getBoundingClientRect();
-        return r.width > 0 && r.y >= 0 && r.y < 64 && r.x > window.innerWidth * 0.65;
+        return r.width > 0 && r.y >= 0 && r.y < 64 && r.x > window.innerWidth * 0.6;
       });
       return {
         blocked: null,
@@ -570,7 +640,11 @@ async function refreshTripoQuickState() {
 
     uiState.tripoBlocked = info.blocked;
     uiState.tripoReady = Boolean(info.ready && !info.blocked);
-    if (Number.isInteger(info.credits)) uiState.tripoCredits = info.credits;
+    if (info.blocked === 'AUTH_REQUIRED') {
+      uiState.tripoCredits = null;
+    } else if (Number.isInteger(info.credits)) {
+      uiState.tripoCredits = info.credits;
+    }
     pushUiState();
   } catch {
     // page still loading
@@ -856,6 +930,13 @@ app.whenReady().then(async () => {
     });
     tripoView.webContents.setUserAgent(CLEAN_CHROME_UA);
     tripoView.webContents.setWindowOpenHandler(({ url }) => {
+      if (isGoogleAuthPopupUrl(url)) {
+        // Block duplicate external Google OAuth popups (cookies/opener cannot return from system browser,
+        // and Google blocks embedded Electron OAuth at server level) and guide user to Email sign-in.
+        setActiveTab('tripo');
+        void showEmailLoginHintInTripoView();
+        return { action: 'deny' };
+      }
       if (url.startsWith('https://accounts.tripo3d.ai')) {
         tripoView.webContents.loadURL(url);
         setActiveTab('tripo');
@@ -1064,6 +1145,36 @@ app.whenReady().then(async () => {
         offscreenTripoMetrics.btnW > 0
       );
 
+      // Verify v2.3.3 signed-out detection (even with <main> + Generate present) & numeric credit parsing
+      await tripoView.webContents.executeJavaScript(`(() => {
+        const hdr = document.createElement('header');
+        hdr.style.cssText = 'position:fixed;top:0;left:0;right:0;height:48px;display:flex;justify-content:flex-end;align-items:center;padding:0 24px;gap:12px';
+        const loginBtn = document.createElement('button');
+        loginBtn.id = 'smokeSignInBtn';
+        loginBtn.textContent = 'Sign in';
+        hdr.appendChild(loginBtn);
+        document.body.prepend(hdr);
+      })()`);
+      await refreshTripoQuickState();
+      const signedOutDetected = uiState.tripoBlocked === 'AUTH_REQUIRED' && uiState.tripoReady === false;
+
+      await tripoView.webContents.executeJavaScript(`(() => {
+        document.getElementById('smokeSignInBtn')?.remove();
+        const cr = document.createElement('span');
+        cr.textContent = '3200';
+        document.querySelector('header')?.appendChild(cr);
+      })()`);
+      await refreshTripoQuickState();
+      wbCheck.tripoAuthAndCreditsOk = (
+        signedOutDetected &&
+        uiState.tripoBlocked === null &&
+        uiState.tripoReady === true &&
+        uiState.tripoCredits === 3200 &&
+        isGoogleAuthPopupUrl('https://accounts.google.com/o/oauth2/v2/auth?client_id=123') &&
+        isGoogleAuthPopupUrl('https://accounts.google.com/gsi/select') &&
+        !isGoogleAuthPopupUrl('https://studio.tripo3d.ai/workspace/generate')
+      );
+
       const sessRes = await fetch(`${workbenchSrv.url}/api/session`, { headers: { host: new URL(workbenchSrv.url).host } });
       const sessJson = await sessRes.json();
       const smokeResult = {
@@ -1090,7 +1201,8 @@ app.whenReady().then(async () => {
         !wbCheck.hasImportTripoBtn ||
         wbCheck.multiViewSlotCount !== 4 ||
         wbCheck.matrixRowCount < 2 ||
-        !wbCheck.tabSwitchRoundtripOk
+        !wbCheck.tabSwitchRoundtripOk ||
+        !wbCheck.tripoAuthAndCreditsOk
       ) {
         throw new Error('Workbench UI layout, node-creation, template-switch, Mask, 4-up inspector, or tab-switch check failed: ' + JSON.stringify(wbCheck));
       }

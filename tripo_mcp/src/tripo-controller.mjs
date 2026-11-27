@@ -244,10 +244,14 @@ export class TripoController {
       if (hasTurnstile && bodyText.length < 800) {
         return { blocked: 'CAPTCHA_OR_CHALLENGE', url, title };
       }
-      const buttons = [...document.querySelectorAll('button, a')].map(el => (el.innerText || '').trim());
-      const hasLoginBtn = buttons.some(t => /^(sign in|log in|登录|登入)$/i.test(t));
-      const hasWorkspace = !!document.querySelector('main') && buttons.some(t => /generate|hd model|export/i.test(t));
-      if (hasLoginBtn && !hasWorkspace) {
+      const hasVisibleLoginBtn = [...document.querySelectorAll('button, a')].some(el => {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity || 1) <= 0.05) return false;
+        return /^(sign in|log in|登录|登入)$/i.test((el.innerText || '').trim());
+      });
+      if (hasVisibleLoginBtn || url.startsWith('https://accounts.tripo3d.ai')) {
         return { blocked: 'AUTH_REQUIRED', url, title };
       }
       return { blocked: null, url, title };
@@ -262,7 +266,7 @@ export class TripoController {
     if (check.blocked === 'AUTH_REQUIRED') {
       try { this.#options.onBlocked?.(check); } catch { /* ignore */ }
       throw new Error(
-        `[BLOCKED: AUTH_REQUIRED] Tripo 页面 (${check.url}) 尚未登录。请在 Tripo 工作区登录账号后再重试。`
+        `[BLOCKED: AUTH_REQUIRED] Tripo 页面 (${check.url}) 尚未登录。请切到「Tripo 账号工作区」使用邮箱账号（密码或验证码）登录一次后再重试。`
       );
     }
     try { this.#options.onUnblocked?.(check); } catch { /* ignore */ }
