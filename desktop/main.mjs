@@ -608,10 +608,13 @@ async function refreshTripoQuickState() {
       const hasTurnstile = !!document.querySelector('iframe[src*="challenges.cloudflare.com"], .cf-turnstile, #challenge-running')
         || /verify you are human|just a moment|請稍候|请稍候|checking your browser/i.test(title);
       if (hasTurnstile && bodyText.length < 800) return { blocked: 'CAPTCHA_OR_CHALLENGE', credits: null, ready: false };
+      // Visibility must not depend on layout geometry. When the Tripo view is
+      // not the active tab its layout box is 0x0, so a getBoundingClientRect()
+      // test reports every element as hidden. The signed-out check then never
+      // fires and the toolbar shows a green "ready" dot for a signed-out
+      // session.
       const isVisible = el => {
         if (!el) return false;
-        const r = el.getBoundingClientRect();
-        if (r.width <= 0 || r.height <= 0) return false;
         const cs = getComputedStyle(el);
         return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity || 1) > 0.05;
       };
@@ -624,13 +627,17 @@ async function refreshTripoQuickState() {
       }
       const buttons = [...document.querySelectorAll('button, a')].map(el => (el.innerText || '').trim());
       const hasWorkspace = !!document.querySelector('main') && buttons.some(t => /generate|hd model|export/i.test(t));
-      const creditsEl = [...document.querySelectorAll('header *, banner *, nav *, body *')].find(el => {
+      // Geometry-based filtering has the same problem: window.innerWidth is 0
+      // in a background tab, so the x > innerWidth * 0.6 test matches nothing.
+      // Scope the search to the header and rely on DOM shape instead (leaf
+      // node, bare digits, not inside a button or link).
+      const headerEl = document.querySelector('header');
+      const creditsEl = headerEl ? [...headerEl.querySelectorAll('*')].find(el => {
         if (el.children.length > 0 || el.closest('button, a')) return false;
         const txt = (el.textContent || '').trim();
         if (!/^\\d{1,7}$/.test(txt)) return false;
-        const r = el.getBoundingClientRect();
-        return r.width > 0 && r.y >= 0 && r.y < 64 && r.x > window.innerWidth * 0.6;
-      });
+        return isVisible(el);
+      }) : null;
       return {
         blocked: null,
         ready: hasWorkspace || url.includes('/workspace/'),
