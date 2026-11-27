@@ -209,14 +209,26 @@ function pushUiState() {
 
 function layoutViews() {
   if (!win || win.isDestroyed()) return;
-  const bounds = win.getContentBounds();
-  const w = Math.max(320, bounds.width);
-  const h = Math.max(240, bounds.height);
-  const bodyH = Math.max(120, h - TOOLBAR_HEIGHT);
+  if (typeof win.isMinimized === 'function' && win.isMinimized()) return;
 
+  const contentSize = typeof win.getContentSize === 'function' ? win.getContentSize() : [0, 0];
+  const bounds = win.getContentBounds();
+  const w = Math.max(contentSize[0] || 0, bounds.width || 0);
+  const h = Math.max(contentSize[1] || 0, bounds.height || 0);
+
+  // Ignore transient 0x0 or tiny bounds emitted during Windows taskbar minimize/restore DWM animations
+  if (w < 400 || h < 300) return;
+
+  const bodyH = Math.max(120, h - TOOLBAR_HEIGHT);
   toolbarView?.setBounds({ x: 0, y: 0, width: w, height: TOOLBAR_HEIGHT });
   workbenchView?.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width: w, height: bodyH });
   tripoView?.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width: w, height: bodyH });
+}
+
+function scheduleRelayout() {
+  layoutViews();
+  setTimeout(layoutViews, 60);
+  setTimeout(layoutViews, 220);
 }
 
 function setActiveTab(tab) {
@@ -692,6 +704,7 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle('desktop:reload-active', () => {
+    scheduleRelayout();
     const target = uiState.activeTab === 'tripo' ? tripoView : workbenchView;
     target?.webContents.reload();
     return true;
@@ -848,8 +861,11 @@ app.whenReady().then(async () => {
     win.contentView.addChildView(tripoView);
     win.contentView.addChildView(workbenchView);
     win.contentView.addChildView(toolbarView);
-    layoutViews();
+    scheduleRelayout();
     win.on('resize', layoutViews);
+    for (const evName of ['restore', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen', 'show', 'focus']) {
+      win.on(evName, scheduleRelayout);
+    }
 
     await toolbarView.webContents.loadFile(path.join(__dirname, 'toolbar.html'));
     void workbenchView.webContents.loadURL(workbenchSrv.url);

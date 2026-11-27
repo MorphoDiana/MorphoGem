@@ -73,7 +73,7 @@ export async function startMorphoGemServer({
         const blenderPath = await findBlender();
         return sendJson(200, {
           ok: true,
-          version: '2.1.3',
+          version: '2.1.4',
           blenderAvailable: Boolean(blenderPath),
           blenderPath: blenderPath || null,
         });
