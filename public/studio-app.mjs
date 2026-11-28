@@ -105,10 +105,17 @@ export function showToast(msg, durationMs = 3400) {
   if (!toastEl) return;
   toastEl.textContent = String(msg || '');
   toastEl.hidden = false;
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toastEl.hidden = true;
-  }, durationMs);
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+    toastTimer = null;
+  }
+  // Pass durationMs <= 0 or Infinity for a persistent toast until replaced
+  if (Number.isFinite(durationMs) && durationMs > 0) {
+    toastTimer = setTimeout(() => {
+      toastEl.hidden = true;
+      toastTimer = null;
+    }, durationMs);
+  }
 }
 
 function triggerDownload(blob, filename) {
@@ -137,6 +144,7 @@ function setSaveBadge(mode, customText = '') {
 
 let saveTimer = null;
 let savingPromise = null;
+let rigExportInFlight = false;
 
 async function flushSaveNow() {
   if (saveTimer) {
@@ -525,6 +533,84 @@ const hooks = {
       showToast(tr(`✓ 已成功导出合并资产包 ${safeName}-assets.zip！`, `✓ Exported merged package ${safeName}-assets.zip!`));
     } catch (err) {
       showToast(err.message || String(err), 5200);
+    }
+  },
+  isRigExporting: () => rigExportInFlight,
+  exportRiggedAssets: async (assemblyNodeId = '') => {
+    if (rigExportInFlight) {
+      return;
+    }
+    rigExportInFlight = true;
+    const startedAt = Date.now();
+    const fmtElapsed = () => {
+      const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      const m = String(Math.floor(sec / 60)).padStart(2, '0');
+      const s = String(sec % 60).padStart(2, '0');
+      return `${m}:${s}`;
+    };
+    const updateRigProgress = () => {
+      const elapsed = fmtElapsed();
+      setSaveBadge('saving', tr(`🦴 VRM 绑骨中 ${elapsed}`, `🦴 Rigging ${elapsed}`));
+      showToast(
+        tr(
+          `🦴 正在执行 VRM 人形绑骨并将独立头发挂回头部骨骼（预计 2~5 分钟，请勿重复点击 · 已用时 ${elapsed}）…`,
+          `🦴 Running VRM Humanoid auto-rig & attaching hair to Head bone (typically 2–5 min, please wait · ${elapsed})...`
+        ),
+        0
+      );
+    };
+
+    let elapsedTimer = null;
+    const stopProgress = () => {
+      if (elapsedTimer) {
+        clearInterval(elapsedTimer);
+        elapsedTimer = null;
+      }
+    };
+    try {
+      const g = ensureNodeGraph(state.project);
+      const asm = assemblyNodeId ? getNode(g, assemblyNodeId) : g.nodes.find(n => n.type === 'assembly_export');
+      canvasCtrl?.render?.();
+      updateRigProgress();
+      elapsedTimer = setInterval(updateRigProgress, 1000);
+
+      await flushSaveNow();
+      const packed = await packProject(state.project, state.files);
+      const res = await fetch('/api/node-graph/export-rigged', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          ...(asm?.id ? {'X-Assembly-Node': asm.id} : {}),
+        },
+        body: packed.bytes,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw Error(err.error || `VRM Rig export failed (${res.status})`);
+      }
+      const rigEngine = res.headers.get('X-Rig-Engine') || 'offline';
+      const rawReason = res.headers.get('X-Rig-Fallback-Reason') || '';
+      const fallbackReason = rawReason ? decodeURIComponent(rawReason) : '';
+      const zipBlob = await res.blob();
+      stopProgress();
+      const safeName = (state.project.name || 'character').replace(/[\\/:*?"<>|\x00-\x1f]+/g, '_').trim() || 'character';
+      triggerDownload(zipBlob, `${safeName}-vrm-rigged.zip`);
+      if (rigEngine === 'offline') {
+        const msgZh = `⚠ Tripo 云端绑骨未就绪${fallbackReason ? `（${fallbackReason}）` : ''}，已自动切换为【本地离线 VRM 绑骨】并导出 ${safeName}-vrm-rigged.zip。`;
+        const msgEn = `⚠ Tripo cloud rigging unavailable${fallbackReason ? ` (${fallbackReason})` : ''}; fell back to local offline VRM auto-rig and exported ${safeName}-vrm-rigged.zip.`;
+        showToast(tr(msgZh, msgEn), 9000);
+        window.alert(tr(msgZh, msgEn));
+      } else {
+        showToast(tr(`✓ 已通过 Tripo 云端完成 VRM 绑骨并挂回独立头发，导出 ${safeName}-vrm-rigged.zip！`, `✓ Rigged via Tripo cloud VRM & re-attached hair: ${safeName}-vrm-rigged.zip!`));
+      }
+    } catch (err) {
+      stopProgress();
+      showToast(err.message || String(err), 6000);
+    } finally {
+      stopProgress();
+      rigExportInFlight = false;
+      setSaveBadge('saved');
+      canvasCtrl?.render?.();
     }
   },
 };
