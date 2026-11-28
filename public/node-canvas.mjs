@@ -3456,7 +3456,22 @@ export function initNodeCanvas(hooks) {
       btnExp.textContent = '📦 合并导出最终模型 (FBX / GLB / Blend)';
       btnExp.onclick = () => hooks.exportGraphAssets(node.id);
 
-      body.append(btn3d, btnExp);
+      const rigBusy = Boolean(hooks.isRigExporting?.());
+      const btnRig = document.createElement('button');
+      btnRig.type = 'button';
+      btnRig.className = 'ng-btn primary';
+      btnRig.style.justifyContent = 'center';
+      btnRig.disabled = connected.length === 0 || rigBusy;
+      btnRig.textContent = rigBusy
+        ? '⏳ VRM 绑骨进行中（预计 2~5 分钟，请勿重复点击）…'
+        : '🦴 一键 VRM 绑骨并挂回独立头发 (FBX / GLB / Blend)';
+      btnRig.onclick = () => {
+        if (btnRig.disabled || hooks.isRigExporting?.()) return;
+        btnRig.disabled = true;
+        hooks.exportRiggedAssets?.(node.id);
+      };
+
+      body.append(btn3d, btnExp, btnRig);
       return body;
     }
 

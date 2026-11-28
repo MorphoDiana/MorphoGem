@@ -133,6 +133,97 @@ export async function runGraphExportBlender(kitBytes, assemblyNodeId = '') {
   }
 }
 
+let rigExportBusy = false;
+
+export async function runGraphRigExportBlender(kitBytes, assemblyNodeId = '') {
+  const blender = await findBlender();
+  if (!blender) throw Error('尚未配置 Blender 路径！请点击右上角「⚙ 设置」（或桌面端顶栏的 Blender 按钮）指定本机的 blender.exe 后再绑骨导出。');
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ng-rig-export-'));
+  const runBlenderScript = (scriptRel, scriptArgs, timeoutMs = 600000) => new Promise((resolve, reject) => {
+    const args = [
+      '--background', '--factory-startup', '--disable-autoexec', '--python-exit-code', '1',
+      '--python', path.join(root, scriptRel), '--', ...scriptArgs,
+    ];
+    const child = spawn(blender, args, {windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe']});
+    let log = '';
+    const collect = d => { log = (log + d).slice(-6000); };
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
+    const timer = setTimeout(() => { child.kill(); reject(Error('VRM 绑骨与挂发导出超时')); }, timeoutMs);
+    child.on('error', e => { clearTimeout(timer); reject(e); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      code === 0 ? resolve(log) : reject(Error(log || `Blender script ${scriptRel} failed (${code})`));
+    });
+  });
+
+  try {
+    const inputKit = path.join(tmp, 'input.mgem');
+    await fs.writeFile(inputKit, kitBytes);
+
+    // 1. Prefer Tripo Studio cloud VRM auto-rigging (with automatic orientation dialog confirm)
+    let tripoRiggedFbx = '';
+    let stageManifest = null;
+    let fallbackReason = '';
+    try {
+      const daemon = await ensureTripoDaemonState();
+      const stageDir = path.join(tmp, 'stage');
+      const stageArgs = [inputKit, stageDir, '--stage-only'];
+      if (assemblyNodeId) stageArgs.push('--assembly-node', assemblyNodeId);
+      await runBlenderScript('scripts/export-rigged-vrm-graph.py', stageArgs);
+      stageManifest = JSON.parse(await fs.readFile(path.join(stageDir, 'stage-manifest.json'), 'utf8'));
+
+      const tripoOutDir = path.join(tmp, 'tripo_rig_out');
+      await fs.mkdir(tripoOutDir, {recursive: true});
+      const rigRes = await callTripoDaemon(daemon.port, daemon.token, 'rig', {
+        filePath: stageManifest.baldGlb,
+        rotateX: 0,
+        rotateY: 0,
+        rotateZ: 0,
+        skeletonPreset: 'VRM',
+        exportPreset: 'Blender',
+        outputDir: tripoOutDir,
+      });
+      if (rigRes?.export?.fbx) {
+        tripoRiggedFbx = rigRes.export.fbx;
+      } else {
+        fallbackReason = 'Tripo 云端未返回绑骨 FBX 文件';
+      }
+    } catch (tripoErr) {
+      fallbackReason = tripoErr?.message || String(tripoErr);
+      console.warn('[MorphoGem] Tripo cloud VRM rig unavailable, falling back to offline Blender VRM auto-rig:', fallbackReason);
+    }
+
+    // 2. If Tripo cloud rig succeeded, attach separate hair (if any) 100% to Head bone and export final package
+    if (tripoRiggedFbx) {
+      const attachOut = path.join(tmp, 'attached');
+      const attachArgs = ['--rigged-bald', tripoRiggedFbx, '--out-dir', attachOut];
+      if (stageManifest?.hairBlend) attachArgs.push('--hair', stageManifest.hairBlend);
+      await runBlenderScript('scripts/attach-hair-to-rig.py', attachArgs);
+      const [fbxBytes, glbBytes, blendBytes] = await Promise.all([
+        fs.readFile(path.join(attachOut, 'rigged_with_hair.fbx')),
+        fs.readFile(path.join(attachOut, 'rigged_with_hair.glb')),
+        fs.readFile(path.join(attachOut, 'rigged_with_hair.blend')),
+      ]);
+      return {fbxBytes, glbBytes, blendBytes, engine: 'tripo', fallbackReason: ''};
+    }
+
+    // 3. Fallback: offline Blender VRM Humanoid auto-rig + Head-bone hair attachment
+    const fallbackArgs = [inputKit, tmp];
+    if (assemblyNodeId) fallbackArgs.push('--assembly-node', assemblyNodeId);
+    await runBlenderScript('scripts/export-rigged-vrm-graph.py', fallbackArgs);
+
+    const [fbxBytes, glbBytes, blendBytes] = await Promise.all([
+      fs.readFile(path.join(tmp, 'rigged.fbx')),
+      fs.readFile(path.join(tmp, 'rigged.glb')),
+      fs.readFile(path.join(tmp, 'rigged.blend')),
+    ]);
+    return {fbxBytes, glbBytes, blendBytes, engine: 'offline', fallbackReason};
+  } finally {
+    await fs.rm(tmp, {recursive: true, force: true}).catch(() => {});
+  }
+}
+
 function presetsFilePath() {
   if (process.env.MORPHOGEM_USERDATA_DIR) {
     return path.join(path.resolve(process.env.MORPHOGEM_USERDATA_DIR), 'node-presets.json');
@@ -502,6 +593,68 @@ export async function handleNodeGraphRequest(req, res, pathname) {
       });
       res.end(zipBuf);
       return true;
+    }
+
+    // 3. One-click VRM Humanoid auto-rig (body+head) + 100% Head-bone hair attachment export
+    if (pathname === '/api/node-graph/export-rigged' && req.method === 'POST') {
+      if (rigExportBusy) {
+        sendJson(409, {error: '已有 VRM 绑骨导出任务正在执行中，请等待当前任务完成后再试。'});
+        return true;
+      }
+      rigExportBusy = true;
+      try {
+        const assemblyNodeId = req.headers['x-assembly-node'] || '';
+        const rawKit = await readBodyBuffer(req);
+        const {project: p} = await unpackProject(rawKit);
+        const g = ensureNodeGraph(p);
+        const parts = connectedAssemblyMeshes(g, assemblyNodeId || null);
+        if (!parts.length) throw Error('合体导出节点尚未接入任何已生成的 3D 部件');
+
+        const {fbxBytes, glbBytes, blendBytes, engine, fallbackReason} = await runGraphRigExportBlender(rawKit, assemblyNodeId);
+        const safeBase = ((p.name || 'character').replace(/[\\/:*?"<>|\x00-\x1f]+/g, '_').trim().slice(0, 80) || 'character');
+
+        const sessCandidates = [
+          process.env.MORPHOGEM_SESSION_FILE,
+          process.env.MORPHOGEM_USERDATA_DIR ? path.join(process.env.MORPHOGEM_USERDATA_DIR, 'session.json') : null,
+          path.join(root, 'local', 'session.json'),
+        ].filter(Boolean);
+        for (const sf of sessCandidates) {
+          try {
+            const sess = JSON.parse(await fs.readFile(sf, 'utf8'));
+            if (sess?.active?.id === p.id && sess?.active?.path) {
+              const expDir = path.join(path.dirname(sess.active.path), 'exports');
+              await fs.mkdir(expDir, {recursive: true});
+              await Promise.all([
+                atomicWrite(path.join(expDir, `${safeBase}-vrm-rigged.fbx`), fbxBytes),
+                atomicWrite(path.join(expDir, `${safeBase}-vrm-rigged.glb`), glbBytes),
+                atomicWrite(path.join(expDir, `${safeBase}-vrm-rigged.blend`), blendBytes),
+              ]);
+              break;
+            }
+          } catch {
+            // ignore if unsaved project
+          }
+        }
+
+        const zipBlob = zipStore({
+          [`${safeBase}-vrm-rigged.fbx`]: new Uint8Array(fbxBytes),
+          [`${safeBase}-vrm-rigged.glb`]: new Uint8Array(glbBytes),
+          [`${safeBase}-vrm-rigged.blend`]: new Uint8Array(blendBytes),
+        });
+        const zipBuf = Buffer.from(await zipBlob.arrayBuffer());
+        res.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Content-Length': zipBuf.length,
+          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`${safeBase}-vrm-rigged.zip`)}`,
+          'X-Rig-Engine': engine || 'offline',
+          'X-Rig-Fallback-Reason': encodeURIComponent((fallbackReason || '').slice(0, 300)),
+          'Cache-Control': 'no-store',
+        });
+        res.end(zipBuf);
+        return true;
+      } finally {
+        rigExportBusy = false;
+      }
     }
 
     sendJson(404, {error: 'Not found'});
