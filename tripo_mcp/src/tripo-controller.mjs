@@ -1573,11 +1573,12 @@ export class TripoController {
   } = {}) {
     if (!filePath) throw new Error('uploadModel requires "filePath"');
     const absFile = path.resolve(filePath);
-    await fs.access(absFile);
+    const fileStat = await fs.stat(absFile);
+    const fileSizeMB = fileStat.size / (1024 * 1024);
 
     return this.#withLock(async () => {
       const page = await this.getTripoPage({ navigateIfNeeded: true });
-      return this.withUiShield(page, '上传 3D 模型并设置朝向', async () => {
+      return this.withUiShield(page, '上传 3D 模型并设置朝向', async (ui) => {
         await this.#closeAnyOpenModalDialogs(page);
 
         const beforeSnap = await this.#readWorkspaceSnapshot(page);
@@ -1602,56 +1603,35 @@ export class TripoController {
         }
 
         await uploadInput.uploadFile(absFile);
-        await sleep(2500);
 
-        // Check if "Find Optimal Orientation" / XYZ rotation dialog appeared
-        const oriented = await page.evaluate(async ({ rx, ry, rz }) => {
-          const spinboxes = [...document.querySelectorAll('input[type="number"], [role="spinbutton"]')].filter(
-            el => el.offsetParent !== null
-          );
-          // Look for X / Y / Z inputs in orientation modal/overlay
-          const setInput = (el, val) => {
-            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-            if (setter) setter.call(el, String(val));
-            else el.value = String(val);
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          };
+        // Poll up to 90s: wait for either the orientation/import confirmation dialog (which may take
+        // 5-20s to appear for large FBX/GLB files) or a newly ready asset in the Assets panel,
+        // with fast-fail paths when confirmation clicks do not dismiss the dialog or no dialog/asset
+        // activity occurs for consecutive rounds.
+        const TOTAL_TIMEOUT_MS = 90000;
+        const POLL_INTERVAL_MS = 1500;
+        const MAX_CONFIRM_ATTEMPTS = 8;
+        const NO_DIALOG_FAST_FAIL_ROUNDS = fileSizeMB <= 5 ? 10 : 20;
+        const POST_CONFIRM_FAST_FAIL_ROUNDS = 20;
 
-          const labels = ['X', 'Y', 'Z'];
-          const vals = [rx, ry, rz];
-          let matched = 0;
-          for (let i = 0; i < 3; i++) {
-            const lbl = [...document.querySelectorAll('*')].find(
-              n => n.children.length === 0 && (n.textContent || '').trim() === labels[i] && n.offsetParent !== null
-            );
-            const inp = lbl?.parentElement?.querySelector('input') || spinboxes[i];
-            if (inp && !inp.closest('[aria-label="Export"]')) {
-              setInput(inp, vals[i]);
-              matched++;
-            }
-          }
-          return matched;
-        }, { rx: rotateX, ry: rotateY, rz: rotateZ });
+        const startedAt = Date.now();
+        const deadline = startedAt + TOTAL_TIMEOUT_MS;
+        let orientationApplied = false;
+        let confirmAttempts = 0;
+        let dialogSeen = false;
+        let lastConfirmText = '';
+        let lastDialogButtons = [];
+        let lastDialogCount = 0;
+        let idleNoDialogRounds = 0;
+        let hasNewAssetActivity = false;
 
-        if (oriented > 0) {
-          await sleep(1000);
-          await page.evaluate(() => {
-            const dlgs = [...document.querySelectorAll('[role="dialog"]')].filter(d => d.offsetParent !== null);
-            const scope = dlgs[dlgs.length - 1] || document;
-            const btns = [...scope.querySelectorAll('button')].filter(b => b.offsetParent !== null && !b.disabled);
-            const confirmBtn = btns.find(b => /^(Confirm|確認|确认|OK|Done)$/i.test((b.innerText || '').trim()))
-              || btns.find(b => /^Save$/i.test((b.innerText || '').trim()));
-            if (confirmBtn) confirmBtn.click();
-          });
-        }
-
-        // Wait up to 45s for uploaded modelId to appear in Assets
-        const deadline = Date.now() + 45000;
         while (Date.now() < deadline) {
-          await sleep(1500);
+          await sleep(POLL_INTERVAL_MS);
+
+          // 1. Check if a new ready asset (or in-progress asset) has appeared
           const snap = await this.#readWorkspaceSnapshot(page);
-          const added = snap.assets.find(a => !knownIds.has(a.modelId) && a.status === 'ready');
+          const newAssets = snap.assets.filter(a => !knownIds.has(a.modelId));
+          const added = newAssets.find(a => a.status === 'ready');
           if (added) {
             return {
               status: 'uploaded',
@@ -1660,8 +1640,159 @@ export class TripoController {
               appliedRotation: { x: rotateX, y: rotateY, z: rotateZ },
             };
           }
+          if (newAssets.length > 0) {
+            hasNewAssetActivity = true;
+            idleNoDialogRounds = 0;
+          }
+
+          // 2. Poll for orientation / import confirmation dialog and auto-fill + confirm it
+          const dlgAction = await page.evaluate(({ rx, ry, rz, alreadyApplied }) => {
+            const isVisible = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              const cs = window.getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+            };
+
+            const dlgs = [...document.querySelectorAll('[role="dialog"], [data-state="open"][role="alertdialog"], .ant-modal, .modal')]
+              .filter(d => isVisible(d) && !d.closest('[aria-label="Export"]'));
+            const activeDlg = dlgs[dlgs.length - 1] || null;
+            const scope = activeDlg || document;
+
+            // Detect XYZ rotation inputs inside orientation dialog/overlay
+            const spinboxes = [...scope.querySelectorAll('input[type="number"], input[type="text"], [role="spinbutton"]')]
+              .filter(el => isVisible(el) && !el.closest('[aria-label="Export"]'));
+
+            const setInput = (el, val) => {
+              const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+              if (setter) setter.call(el, String(val));
+              else el.value = String(val);
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+
+            const labels = ['X', 'Y', 'Z'];
+            const vals = [rx, ry, rz];
+            const foundLabels = labels.map(lblText =>
+              [...scope.querySelectorAll('*')].find(
+                n => n.children.length === 0 && (n.textContent || '').trim() === lblText && isVisible(n)
+              )
+            );
+            const hasAllAxisLabels = foundLabels.every(Boolean);
+
+            let matchedInputs = 0;
+            if (!alreadyApplied && (activeDlg || hasAllAxisLabels)) {
+              for (let i = 0; i < 3; i++) {
+                const inp = foundLabels[i]?.parentElement?.querySelector('input') || (activeDlg ? spinboxes[i] : null);
+                if (inp && !inp.closest('[aria-label="Export"]')) {
+                  setInput(inp, vals[i]);
+                  matchedInputs++;
+                }
+              }
+            }
+
+            // Treat either a visible modal dialog or an XYZ orientation overlay as an active dialog
+            const hasOverlay = Boolean(activeDlg || hasAllAxisLabels);
+            if (!hasOverlay) {
+              return { foundDialog: false, dialogCount: 0, dialogButtons: [], matchedInputs: 0, confirmRect: null };
+            }
+
+            const btns = [...scope.querySelectorAll('button')].filter(b => isVisible(b) && !b.disabled);
+            const dialogButtons = btns.map(b => (b.innerText || '').trim()).filter(Boolean);
+            const confirmRe = /^(Confirm(\s+Orientation)?|Import|Continue|Apply|Upload|OK|Done|Save|Next|确认(朝向)?|确定|导入|继续|应用|完成|下一步)$/i;
+            const confirmBtn = btns.find(b => confirmRe.test((b.innerText || '').trim()))
+              || btns.find(b => /confirm|import|continue|apply|确认|确定|导入/i.test((b.innerText || '').trim()) && !/cancel|close|取消|关闭/i.test((b.innerText || '').trim()));
+
+            if (!confirmBtn) {
+              return { foundDialog: true, dialogCount: dlgs.length || 1, dialogButtons, matchedInputs, confirmRect: null };
+            }
+            const r = confirmBtn.getBoundingClientRect();
+            return {
+              foundDialog: true,
+              dialogCount: dlgs.length || 1,
+              dialogButtons,
+              matchedInputs,
+              confirmText: (confirmBtn.innerText || '').trim(),
+              confirmRect: { x: r.x + r.width / 2, y: r.y + r.height / 2 },
+            };
+          }, { rx: rotateX, ry: rotateY, rz: rotateZ, alreadyApplied: orientationApplied });
+
+          lastDialogCount = dlgAction.dialogCount;
+          lastDialogButtons = dlgAction.dialogButtons || [];
+
+          if (!dlgAction.foundDialog) {
+            // Reset orientationApplied whenever the dialog closes so a reopened dialog gets XYZ re-filled
+            orientationApplied = false;
+
+            if (!hasNewAssetActivity) {
+              idleNoDialogRounds++;
+              const fastFailLimit = confirmAttempts > 0 ? POST_CONFIRM_FAST_FAIL_ROUNDS : NO_DIALOG_FAST_FAIL_ROUNDS;
+              if (idleNoDialogRounds >= fastFailLimit) {
+                const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+                const stageHint = confirmAttempts > 0
+                  ? `已点击确认按钮「${lastConfirmText || '确认'}」${confirmAttempts} 次且弹窗已关闭，但连续 ${idleNoDialogRounds} 轮（${elapsedSec}s）未检测到新资产`
+                  : `连续 ${idleNoDialogRounds} 轮（${elapsedSec}s）未出现朝向弹窗且资产列表无变化（文件大小 ${fileSizeMB.toFixed(1)} MB），上传可能已失败或未触发`;
+                throw new Error(
+                  `上传 3D 模型 (${path.basename(absFile)}) 快速失败：${stageHint}（dialogCount=0）。`
+                );
+              }
+            }
+            continue;
+          }
+
+          dialogSeen = true;
+          idleNoDialogRounds = 0;
+
+          // Fail fast if all confirm attempts have been exhausted yet the dialog is still open
+          if (confirmAttempts >= MAX_CONFIRM_ATTEMPTS) {
+            const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+            throw new Error(
+              `上传 3D 模型 (${path.basename(absFile)}) 朝向弹窗确认失败：已连续尝试点击「${lastConfirmText || dlgAction.confirmText || '确认'}」${confirmAttempts} 次（用时 ${elapsedSec}s），但弹窗仍未关闭且未出现就绪资产（dialogCount=${dlgAction.dialogCount}, buttons=${JSON.stringify(dlgAction.dialogButtons || [])}）。`
+            );
+          }
+
+          if (dlgAction.matchedInputs > 0) {
+            orientationApplied = true;
+            await sleep(600);
+          }
+          if (dlgAction.confirmRect) {
+            confirmAttempts++;
+            lastConfirmText = dlgAction.confirmText || '';
+            await ui.click(dlgAction.confirmRect.x, dlgAction.confirmRect.y);
+            await sleep(1000);
+          }
         }
-        throw new Error(`上传 3D 模型 (${path.basename(absFile)}) 后 45 秒内未检测到就绪资产，请检查 Tripo 页面状态（是否有朝向确认弹窗未关闭）。`);
+
+        const diag = await page.evaluate(() => {
+          const isVisible = (el) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const cs = window.getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+          };
+          const dlgs = [...document.querySelectorAll('[role="dialog"], [data-state="open"][role="alertdialog"], .ant-modal, .modal')]
+            .filter(d => isVisible(d) && !d.closest('[aria-label="Export"]'));
+          const btns = dlgs.length
+            ? [...dlgs[dlgs.length - 1].querySelectorAll('button')].filter(isVisible).map(b => (b.innerText || '').trim()).filter(Boolean)
+            : [];
+          return { dialogCount: dlgs.length, dialogButtons: btns };
+        }).catch(() => ({ dialogCount: lastDialogCount, dialogButtons: lastDialogButtons }));
+
+        let reasonDetail;
+        if (confirmAttempts > 0 && (diag.dialogCount ?? 0) > 0) {
+          reasonDetail = `已尝试点击确认按钮「${lastConfirmText || '确认'}」${confirmAttempts} 次，但弹窗仍未关闭（可能是确认点击未生效）`;
+        } else if (confirmAttempts > 0) {
+          reasonDetail = `已点击确认按钮「${lastConfirmText || '确认'}」${confirmAttempts} 次且弹窗已关闭，但等待超时仍未出现就绪资产${hasNewAssetActivity ? '（资产一直处于处理中）' : ''}`;
+        } else if (dialogSeen || (diag.dialogCount ?? 0) > 0) {
+          reasonDetail = '检测到弹窗但未找到可点击的确认按钮';
+        } else if (hasNewAssetActivity) {
+          reasonDetail = '已检测到新资产但 90 秒内一直未变为 ready 状态';
+        } else {
+          reasonDetail = '未检测到朝向确认弹窗且未出现新资产';
+        }
+        throw new Error(
+          `上传 3D 模型 (${path.basename(absFile)}) 后 90 秒内未检测到就绪资产：${reasonDetail}（confirmAttempts=${confirmAttempts}, dialogCount=${diag.dialogCount ?? '?'}, buttons=${JSON.stringify(diag.dialogButtons || [])}）。`
+        );
       });
     });
   }
