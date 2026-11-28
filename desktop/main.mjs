@@ -1330,6 +1330,7 @@ app.whenReady().then(async () => {
       const inspectorCheck = await workbenchView.webContents.executeJavaScript(`(() => {
         const hasMaskNode = !!document.querySelector('#ngNodesLayer .ng-node[data-type="mask_ref"]');
         const hasImportTripoBtn = !!document.querySelector('#ngNodesLayer .ng-node[data-type="tripo_mesh"] .ng-import-tripo-btn');
+        const hasVpRigBtn = !!document.getElementById('vpExportRiggedBtn');
         const expandBtn = document.querySelector('#ngNodesLayer .ng-node[data-type="part_views"] .ng-btn.cyan');
         expandBtn?.click();
         const dlg = document.getElementById('ngImagePreviewDialog');
@@ -1338,11 +1339,12 @@ app.whenReady().then(async () => {
         document.getElementById('ngInspectAllViewsBtn')?.click();
         const matrixRows = dlg ? dlg.querySelectorAll('#mvMatrixStack .mv-matrix-row-block').length : 0;
         if (dlg?.open) dlg.close();
-        return { hasMaskNode, hasImportTripoBtn, multiViewSlotCount: slotCount, matrixRowCount: matrixRows };
+        return { hasMaskNode, hasImportTripoBtn, hasVpRigBtn, multiViewSlotCount: slotCount, matrixRowCount: matrixRows };
       })()`);
       wbCheck.parametricRatioReady = v22Check;
       wbCheck.hasMaskNode = inspectorCheck.hasMaskNode;
       wbCheck.hasImportTripoBtn = inspectorCheck.hasImportTripoBtn;
+      wbCheck.hasVpRigBtn = inspectorCheck.hasVpRigBtn;
       wbCheck.multiViewSlotCount = inspectorCheck.multiViewSlotCount;
       wbCheck.matrixRowCount = inspectorCheck.matrixRowCount;
 
@@ -1434,6 +1436,7 @@ app.whenReady().then(async () => {
         !wbCheck.parametricRatioReady ||
         !wbCheck.hasMaskNode ||
         !wbCheck.hasImportTripoBtn ||
+        !wbCheck.hasVpRigBtn ||
         wbCheck.multiViewSlotCount !== 4 ||
         wbCheck.matrixRowCount < 2 ||
         !wbCheck.tabSwitchRoundtripOk ||

@@ -3463,8 +3463,8 @@ export function initNodeCanvas(hooks) {
       btnRig.style.justifyContent = 'center';
       btnRig.disabled = connected.length === 0 || rigBusy;
       btnRig.textContent = rigBusy
-        ? '⏳ VRM 绑骨进行中（预计 2~5 分钟，请勿重复点击）…'
-        : '🦴 一键 VRM 绑骨并挂回独立头发 (FBX / GLB / Blend)';
+        ? tr('⏳ VRM 绑骨进行中（预计 2~5 分钟，请勿重复点击）…', '⏳ VRM Auto-Rigging in progress (2–5 min, please wait)...')
+        : tr('🦴 一键 VRM 绑骨并挂回独立头发 (FBX / GLB / Blend)', '🦴 1-Click VRM Auto-Rig + Head-Bound Hair (FBX / GLB / Blend)');
       btnRig.onclick = () => {
         if (btnRig.disabled || hooks.isRigExporting?.()) return;
         btnRig.disabled = true;

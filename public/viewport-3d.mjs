@@ -99,6 +99,39 @@ export function initViewport3D(hooks) {
   const partGroups = new Map(); // meshNodeId -> { outerGroup, label, hidden }
   let selectedMeshNodeId = null;
   let guideUrls = [];
+  let guidePlanes = {front: null, back: null, right: null, left: null};
+
+  function syncGuideVisibilityForCamera() {
+    guideGroup.visible = showGuides;
+    const {front, back, right, left} = guidePlanes;
+    if (activeCamMode === 'front') {
+      if (front) front.visible = true;
+      if (back) back.visible = false;
+      if (right) right.visible = false;
+      if (left) left.visible = false;
+    } else if (activeCamMode === 'back') {
+      if (front) front.visible = !back;
+      if (back) back.visible = true;
+      if (right) right.visible = false;
+      if (left) left.visible = false;
+    } else if (activeCamMode === 'right') {
+      if (front) front.visible = false;
+      if (back) back.visible = false;
+      if (right) right.visible = true;
+      if (left) left.visible = false;
+    } else if (activeCamMode === 'left') {
+      if (front) front.visible = false;
+      if (back) back.visible = false;
+      if (right) right.visible = false;
+      if (left) left.visible = true;
+    } else {
+      // Orbit / Top: show Front (-Z) and Right (+X backdrop facing -X) reference planes
+      if (front) front.visible = true;
+      if (back) back.visible = false;
+      if (right) right.visible = true;
+      if (left) left.visible = false;
+    }
+  }
 
   function resizeViewport() {
     const rect = stageWrap.getBoundingClientRect();
@@ -309,15 +342,16 @@ export function initViewport3D(hooks) {
     while (guideGroup.children.length) guideGroup.remove(guideGroup.children[0]);
     for (const u of guideUrls) URL.revokeObjectURL(u);
     guideUrls = [];
+    guidePlanes = {front: null, back: null, right: null, left: null};
 
     const views = connectedAssemblyGuide(project.nodeGraph);
     if (!views) return;
     const h = Number(project.targetHeight) || 1.60;
     const loader = new THREE.TextureLoader();
 
-    const addPlane = (doc, pos, rotY) => {
+    const makePlane = (doc, pos, rotY) => {
       const bytes = doc?.path ? files.get(doc.path) : null;
-      if (!bytes) return;
+      if (!bytes) return null;
       const url = URL.createObjectURL(new Blob([bytes], {type: doc.mime || 'image/png'}));
       guideUrls.push(url);
       const tex = loader.load(url);
@@ -334,11 +368,23 @@ export function initViewport3D(hooks) {
       mesh.position.set(pos[0], h * 0.5, pos[2]);
       mesh.rotation.y = rotY;
       guideGroup.add(mesh);
+      return mesh;
     };
 
-    addPlane(views.front, [0, 0, -0.75], 0);
-    addPlane(views.side, [-0.75, 0, 0], Math.PI / 2);
-    guideGroup.visible = showGuides;
+    // Character faces +Z with +Y up:
+    // - Front plane sits behind at z = -0.75 facing +Z (rotY = 0)
+    // - Back plane sits behind from back view at z = +0.75 facing -Z (rotY = PI)
+    // - Right/Side plane (`side` has nose at u=1 -->): rotY = -PI/2 maps local +X (u: 0->1) to +Z (nose!),
+    //   facing -X (toward the `right` camera at -dist) while sitting behind the model at x = +0.75.
+    // - Left plane: if `views.left` exists (nose at u=0 <--), rotY = +PI/2 maps u=0 to +Z; otherwise reuse
+    //   `views.side` with rotY = -PI/2 (DoubleSide keeps u=1 at +Z = screen-left <-- from +X camera!) at x = -0.75.
+    guidePlanes.front = makePlane(views.front, [0, 0, -0.75], 0);
+    guidePlanes.back = makePlane(views.back, [0, 0, 0.75], Math.PI);
+    guidePlanes.right = makePlane(views.right || views.side, [0.75, 0, 0], -Math.PI / 2);
+    guidePlanes.left = views.left
+      ? makePlane(views.left, [-0.75, 0, 0], Math.PI / 2)
+      : makePlane(views.side, [-0.75, 0, 0], -Math.PI / 2);
+    syncGuideVisibilityForCamera();
   }
 
   let syncToken = 0;
@@ -609,6 +655,16 @@ export function initViewport3D(hooks) {
     hooks.exportGraphAssets(asm?.id || '');
   };
 
+  const vpRigBtn = document.querySelector('#vpExportRiggedBtn');
+  if (vpRigBtn) {
+    vpRigBtn.onclick = () => {
+      if (vpRigBtn.disabled || hooks.isRigExporting?.()) return;
+      const {project} = hooks.get();
+      const asm = ensureNodeGraph(project).nodes.find(n => n.type === 'assembly_export');
+      hooks.exportRiggedAssets?.(asm?.id || '');
+    };
+  }
+
   document.querySelector('#vpBackToCanvasBtn').onclick = () => {
     window.dispatchEvent(new CustomEvent('morphogem-switch-workspace', {detail: 'canvas'}));
   };
@@ -630,6 +686,7 @@ export function initViewport3D(hooks) {
       perspCam.position.set(0.6, centerY + 0.25, span * 2.8);
       controls.target.set(0, centerY, 0);
       controls.update();
+      syncGuideVisibilityForCamera();
       return;
     }
 
@@ -645,13 +702,16 @@ export function initViewport3D(hooks) {
     orthoCam.updateProjectionMatrix();
 
     const dist = 8;
+    // Character faces +Z (+Y up): character's anatomical Right side is -X (nose --> right on screen),
+    // and anatomical Left side is +X (nose <-- left on screen).
     if (mode === 'front') orthoCam.position.set(0, centerY, dist);
     else if (mode === 'back') orthoCam.position.set(0, centerY, -dist);
-    else if (mode === 'right') orthoCam.position.set(dist, centerY, 0);
-    else if (mode === 'left') orthoCam.position.set(-dist, centerY, 0);
+    else if (mode === 'right') orthoCam.position.set(-dist, centerY, 0);
+    else if (mode === 'left') orthoCam.position.set(dist, centerY, 0);
     else if (mode === 'top') orthoCam.position.set(0, centerY + dist, 0.001);
     controls.target.set(0, centerY, 0);
     controls.update();
+    syncGuideVisibilityForCamera();
   }
 
   stageWrap.querySelectorAll('.vp-cam-btn[data-cam]').forEach(btn => {
@@ -661,7 +721,7 @@ export function initViewport3D(hooks) {
   document.querySelector('#vpFitBtn').onclick = () => setCameraPreset(activeCamMode);
   document.querySelector('#vpGuideToggleBtn').onclick = ev => {
     showGuides = !showGuides;
-    guideGroup.visible = showGuides;
+    syncGuideVisibilityForCamera();
     ev.currentTarget.classList.toggle('active', showGuides);
   };
   document.querySelector('#vpWireframeBtn').onclick = ev => {
@@ -714,6 +774,7 @@ export function initViewport3D(hooks) {
   return {
     sync: syncSceneFromProject,
     resize: resizeViewport,
+    getOrthoCameraPosition: () => ({x: orthoCam.position.x, y: orthoCam.position.y, z: orthoCam.position.z, mode: activeCamMode}),
     refreshLabels: () => {
       renderPartsListUI();
       syncTransformInputsFromSelected();

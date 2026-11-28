@@ -61,6 +61,7 @@ const UI_STRINGS = {
   matPbr: ['PBR 标准材质（通用推荐）', 'PBR Standard Material (Recommended)'],
   matToon: ['Anime Toon 二次元赛璐璐材质', 'Anime Cel-Toon Material'],
   vpExportBtn: ['📦 合并导出最终模型 (FBX + GLB + Blend)', '📦 Merge & Export Final Assets (FBX + GLB + Blend)'],
+  vpExportRigBtn: ['🦴 一键 VRM 绑骨并挂回独立头发 (FBX + GLB + Blend)', '🦴 1-Click VRM Auto-Rig + Head-Bound Hair (FBX + GLB + Blend)'],
   settingsTitle: ['⚙ 工作台与引擎设置', '⚙ Studio & Engine Settings'],
   settingsLangTitle: ['🌐 界面与 AI 提示词语言 / Language', '🌐 UI & AI Prompt Language'],
   settingsDirTitle: ['📁 当前活跃工程存储位置', '📁 Active Project Storage Path'],
@@ -560,6 +561,15 @@ const hooks = {
       );
     };
 
+    const syncVpRigBtn = () => {
+      const vpBtn = document.querySelector('#vpExportRiggedBtn');
+      if (!vpBtn) return;
+      vpBtn.disabled = rigExportInFlight;
+      vpBtn.textContent = rigExportInFlight
+        ? tr('⏳ VRM 绑骨进行中（预计 2~5 分钟）…', '⏳ VRM Auto-Rigging in progress (2–5 min)...')
+        : tr('🦴 一键 VRM 绑骨并挂回独立头发 (FBX + GLB + Blend)', '🦴 1-Click VRM Auto-Rig + Head-Bound Hair (FBX + GLB + Blend)');
+    };
+
     let elapsedTimer = null;
     const stopProgress = () => {
       if (elapsedTimer) {
@@ -571,6 +581,7 @@ const hooks = {
       const g = ensureNodeGraph(state.project);
       const asm = assemblyNodeId ? getNode(g, assemblyNodeId) : g.nodes.find(n => n.type === 'assembly_export');
       canvasCtrl?.render?.();
+      syncVpRigBtn();
       updateRigProgress();
       elapsedTimer = setInterval(updateRigProgress, 1000);
 
@@ -598,8 +609,7 @@ const hooks = {
       if (rigEngine === 'offline') {
         const msgZh = `⚠ Tripo 云端绑骨未就绪${fallbackReason ? `（${fallbackReason}）` : ''}，已自动切换为【本地离线 VRM 绑骨】并导出 ${safeName}-vrm-rigged.zip。`;
         const msgEn = `⚠ Tripo cloud rigging unavailable${fallbackReason ? ` (${fallbackReason})` : ''}; fell back to local offline VRM auto-rig and exported ${safeName}-vrm-rigged.zip.`;
-        showToast(tr(msgZh, msgEn), 9000);
-        window.alert(tr(msgZh, msgEn));
+        showToast(tr(msgZh, msgEn), 9500);
       } else {
         showToast(tr(`✓ 已通过 Tripo 云端完成 VRM 绑骨并挂回独立头发，导出 ${safeName}-vrm-rigged.zip！`, `✓ Rigged via Tripo cloud VRM & re-attached hair: ${safeName}-vrm-rigged.zip!`));
       }
@@ -610,6 +620,7 @@ const hooks = {
       stopProgress();
       rigExportInFlight = false;
       setSaveBadge('saved');
+      syncVpRigBtn();
       canvasCtrl?.render?.();
     }
   },
