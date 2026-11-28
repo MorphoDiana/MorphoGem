@@ -208,6 +208,10 @@ const uiState = {
   tripoReady: false,
   tripoCredits: null,
   tripoBlocked: null, // null | 'AUTH_REQUIRED' | 'CAPTCHA_OR_CHALLENGE'
+  // Set when a session previously existed but the server no longer accepts it.
+  // Lets the UI say "session expired, sign in again" instead of showing the
+  // same thing as a first-time sign-out.
+  tripoSessionExpired: false,
   googleAuthHint: false,
   tripoActivity: { active: false, label: '' },
   download: { active: false, filename: '', received: 0, total: 0 },
@@ -600,6 +604,56 @@ async function showEmailLoginHintInTripoView() {
   }
 }
 
+/**
+ * Ask the server whether the current session is still valid.
+ *
+ * Tripo delegates identity to auth.tripo3d.ai, an Ory Kratos deployment. Its
+ * canonical "am I signed in" endpoint is /sessions/whoami there: 200 with a
+ * session body when the cookie is good, 401/403 when it expired or was revoked.
+ *
+ * Note the host. The same path on studio.tripo3d.ai returns 404 because that
+ * origin only serves the SPA, and api.tripo3d.ai does not expose it either.
+ *
+ * This matters because the DOM cannot tell "never signed in" apart from
+ * "signed in, session expired" -- both render an identical Sign in button. Only
+ * the server knows. And a Kratos session has a fixed lifespan, so it does expire
+ * on its own after roughly a day even while the cookie file stays on disk.
+ *
+ * The request is issued from tripoView, so it carries the persist:tripo cookies
+ * without copying anything into the main process.
+ *
+ * Returns true / false, or null when it cannot be determined.
+ */
+async function probeTripoSession() {
+  if (!tripoView || tripoView.webContents.isDestroyed()) return null;
+  try {
+    const ses = session.fromPartition('persist:tripo');
+    const cookies = await ses.cookies.get({ name: 'ory_kratos_session' });
+    // No session cookie at all: definitely signed out, nothing to ask about.
+    if (!cookies.length) return false;
+
+    const status = await tripoView.webContents.executeJavaScript(`(async () => {
+      try {
+        const r = await fetch('https://auth.tripo3d.ai/sessions/whoami', {
+          method: 'GET',
+          credentials: 'include',
+          headers: { accept: 'application/json' },
+        });
+        return r.status;
+      } catch {
+        return -1;
+      }
+    })()`, false);
+
+    if (status === 200) return true;
+    if (status === 401 || status === 403) return false;
+    // 404 / network errors: inconclusive, leave the caller's state alone.
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function refreshTripoQuickState() {
   if (!tripoView || tripoView.webContents.isDestroyed()) return;
   try {
@@ -651,8 +705,31 @@ async function refreshTripoQuickState() {
     uiState.tripoReady = Boolean(info.ready && !info.blocked);
     if (info.blocked === 'AUTH_REQUIRED') {
       uiState.tripoCredits = null;
-    } else if (Number.isInteger(info.credits)) {
-      uiState.tripoCredits = info.credits;
+
+      // The page shows the same Sign in button whether the user never signed
+      // in or the session expired. Ask the server so the UI can tell them
+      // apart -- a Kratos session has a fixed lifespan and does expire on its
+      // own after about a day. Only probe when a cookie still exists, and do
+      // not overwrite the flag once set.
+      if (!uiState.tripoSessionExpired) {
+        try {
+          const ses = session.fromPartition('persist:tripo');
+          const hasCookie = (await ses.cookies.get({ name: 'ory_kratos_session' })).length > 0;
+          if (hasCookie) {
+            const valid = await probeTripoSession();
+            // valid === false means the server rejected a cookie we still hold.
+            if (valid === false) uiState.tripoSessionExpired = true;
+          }
+        } catch {
+          // probe is best-effort; a failure leaves the flag untouched
+        }
+      }
+    } else if (info.blocked === null) {
+      // Signed in again: clear the expired marker.
+      uiState.tripoSessionExpired = false;
+      if (Number.isInteger(info.credits)) {
+        uiState.tripoCredits = info.credits;
+      }
     }
     pushUiState();
   } catch {
