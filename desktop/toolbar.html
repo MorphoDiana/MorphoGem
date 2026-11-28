@@ -278,7 +278,13 @@
       const dot = $('tripoDot');
       dot.className = 'dot ' + (s.tripoBlocked ? 'warn' : s.tripoReady ? 'ok' : '');
       let tabText = 'Tripo 账号工作区';
-      if (s.tripoBlocked === 'AUTH_REQUIRED') tabText = 'Tripo 账号（待登录）';
+      if (s.tripoBlocked === 'AUTH_REQUIRED') {
+        // A first sign-out and an expired session look identical on the page:
+        // both show the same Sign in button. The server probe is what tells
+        // them apart, and the difference matters -- one is expected on first
+        // run, the other means the day-old session ran out.
+        tabText = s.tripoSessionExpired ? 'Tripo 登录已过期' : 'Tripo 账号（待登录）';
+      }
       else if (s.tripoBlocked === 'CAPTCHA_OR_CHALLENGE') tabText = 'Tripo 账号（需验证）';
       else if (Number.isInteger(s.tripoCredits)) tabText = `Tripo 已就绪 · 积分 ${s.tripoCredits}`;
       else if (s.tripoReady) tabText = 'Tripo 已就绪';
@@ -327,9 +333,13 @@
         bp.textContent = '💡 已拦截无效 Google 弹窗：请直接使用 Tripo「邮箱 + 密码/验证码」登录（一次登录永久保存）';
       } else if (s.tripoBlocked) {
         bp.hidden = false;
-        bp.textContent = s.tripoBlocked === 'AUTH_REQUIRED'
-          ? '⚠ 请在 Tripo 工作区使用「邮箱账号」登录一次（推荐邮箱密码/验证码，自动持久保存）'
-          : '⚠ 请在 Tripo 工作区点击完成人机验证后继续';
+        if (s.tripoBlocked === 'AUTH_REQUIRED') {
+          bp.textContent = s.tripoSessionExpired
+            ? '⚠ Tripo 登录已过期（会话约 24 小时有效）— 点击此处重新登录'
+            : '⚠ 请在 Tripo 工作区使用「邮箱账号」登录一次（推荐邮箱密码/验证码，自动持久保存）';
+        } else {
+          bp.textContent = '⚠ 请在 Tripo 工作区点击完成人机验证后继续';
+        }
       } else {
         bp.hidden = true;
       }
@@ -363,7 +373,12 @@
     $('tabWorkbench').onclick = () => window.morphogemDesktop.switchTab('workbench');
     $('tabTripo').onclick = () => window.morphogemDesktop.switchTab('tripo');
     $('blenderPill').onclick = () => window.morphogemDesktop.chooseBlenderExe();
-    $('blockedPill').onclick = () => window.morphogemDesktop.switchTab('tripo');
+    $('blockedPill').onclick = () => {
+      // Clicking the hint takes the user straight to the Tripo view; the 0.
+      // sign-in panel is already there, so that is one less step than hunting
+      // for the tab.
+      window.morphogemDesktop.switchTab('tripo');
+    };
     $('savedPill').onclick = () => window.morphogemDesktop.revealLastDownload();
     $('btnProjects').onclick = () => window.morphogemDesktop.openProjectsDir();
     $('btnMods').onclick = () => window.morphogemDesktop.openModsDir();
